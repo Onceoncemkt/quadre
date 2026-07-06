@@ -23,7 +23,8 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
-# os/editor
+# system/editor
 .DS_Store
+Thumbs.db
 .idea/
 .vscode/
