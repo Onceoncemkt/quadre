@@ -1,0 +1,507 @@
+// ============================================================
+// QUADRE — Control de dinero para restaurantes y bares
+// Prisma schema v1 (PostgreSQL)
+// Stack: Node/Express/Prisma/PostgreSQL (Render) + React/Vite (Vercel)
+// Patrón multi-tenant heredado de LealHub: Business → Locations → Users
+// ============================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================
+// 1. TENANCY, USUARIOS Y SUSCRIPCIÓN
+// ============================================================
+
+model Business {
+  id               String   @id @default(cuid())
+  name             String
+  slug             String   @unique
+  status           BusinessStatus @default(TRIAL)
+  // Stripe (mismo patrón que LealHub)
+  stripeCustomerId String?  @unique
+  stripeSubId      String?  @unique
+  plan             PlanTier @default(BASICO)
+  trialEndsAt      DateTime?
+  currentPeriodEnd DateTime?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  locations        Location[]
+  memberships      Membership[]
+  suppliers        Counterparty[]
+  items            Item[]
+  expenseCategories ExpenseCategory[]
+  employees        Employee[]
+}
+
+enum BusinessStatus {
+  TRIAL
+  ACTIVE
+  PAST_DUE
+  INCOMPLETE
+  CANCELLED
+}
+
+enum PlanTier {
+  BASICO   // cierres + egresos + P&L
+  PRO      // + requisiciones + proveedores/CxP
+  TOTAL    // + nómina + multi-sucursal ilimitada
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  name         String
+  phone        String?
+  createdAt    DateTime @default(now())
+
+  memberships  Membership[]
+}
+
+model Membership {
+  id         String   @id @default(cuid())
+  userId     String
+  businessId String
+  role       Role     @default(STAFF)
+  // Si es null, tiene acceso a todas las sucursales del negocio
+  locationId String?
+
+  user       User     @relation(fields: [userId], references: [id])
+  business   Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  location   Location? @relation(fields: [locationId], references: [id])
+
+  @@unique([userId, businessId])
+}
+
+enum Role {
+  OWNER    // dueño: todo, incluyendo facturación
+  ADMIN    // administrador: todo menos facturación
+  MANAGER  // gerente: cierres, requisiciones, asistencia
+  STAFF    // captura limitada (checklists, cierres sin aprobar)
+}
+
+model Location {
+  id         String   @id @default(cuid())
+  businessId String
+  name       String   // "Tulanyork Centro", "Donde Siempre"
+  address    String?
+  timezone   String   @default("America/Mexico_City")
+  active     Boolean  @default(true)
+
+  business   Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  memberships Membership[]
+  shifts     Shift[]
+  expenses   Expense[]
+  requisitions Requisition[]
+  employees  Employee[]
+}
+
+// ============================================================
+// 2. CIERRES DE TURNO (ingresos)
+// ============================================================
+
+model Shift {
+  id          String     @id @default(cuid())
+  locationId  String
+  date        DateTime   @db.Date
+  type        ShiftType
+  status      ShiftStatus @default(OPEN)
+  openedById  String?
+  closedById  String?
+  createdAt   DateTime   @default(now())
+
+  location    Location   @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  closing     ShiftClosing?
+  attendance  AttendanceRecord[]
+
+  @@unique([locationId, date, type])
+}
+
+enum ShiftType {
+  MATUTINO
+  VESPERTINO
+  NOCTURNO
+  UNICO
+}
+
+enum ShiftStatus {
+  OPEN
+  CLOSED
+  APPROVED  // revisado por admin/owner
+}
+
+model ShiftClosing {
+  id            String   @id @default(cuid())
+  shiftId       String   @unique
+  // Fondo de caja
+  openingCash   Decimal  @default(0) @db.Decimal(12, 2)
+  expectedCash  Decimal  @db.Decimal(12, 2) // ventas efectivo + fondo - retiros
+  countedCash   Decimal  @db.Decimal(12, 2) // arqueo físico
+  difference    Decimal  @db.Decimal(12, 2) // sobrante(+) / faltante(-)
+  cashWithdrawn Decimal  @default(0) @db.Decimal(12, 2) // retiros a bóveda/depósito
+  ticketCount   Int?
+  notes         String?
+  evidenceUrls  String[] // fotos de tickets, corte del POS, vouchers
+  closedAt      DateTime @default(now())
+
+  shift         Shift    @relation(fields: [shiftId], references: [id], onDelete: Cascade)
+  lines         ClosingLine[]
+}
+
+// Ventas desglosadas por método/canal — flexible para FUDO, Rappi, eventos
+model ClosingLine {
+  id         String        @id @default(cuid())
+  closingId  String
+  channel    RevenueChannel
+  method     PaymentMethod
+  gross      Decimal       @db.Decimal(12, 2)
+  // Comisión del canal (ej. Rappi 30% + IVA) — se calcula y guarda
+  feePct     Decimal       @default(0) @db.Decimal(5, 2)
+  feeAmount  Decimal       @default(0) @db.Decimal(12, 2)
+  net        Decimal       @db.Decimal(12, 2)
+
+  closing    ShiftClosing  @relation(fields: [closingId], references: [id], onDelete: Cascade)
+}
+
+enum RevenueChannel {
+  PISO       // salón/barra
+  RAPPI
+  UBER_EATS
+  DIDI_FOOD
+  EVENTO
+  OTRO
+}
+
+enum PaymentMethod {
+  EFECTIVO
+  TARJETA
+  TRANSFERENCIA
+  APP        // cobrado por la plataforma
+  OTRO
+}
+
+// ============================================================
+// 3. EGRESOS Y P&L
+// ============================================================
+
+model ExpenseCategory {
+  id         String  @id @default(cuid())
+  businessId String
+  name       String  // Insumos, Renta, Servicios, Nómina, Comisiones apps...
+  kind       CategoryKind @default(OPERATIVO)
+
+  business   Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  expenses   Expense[]
+
+  @@unique([businessId, name])
+}
+
+enum CategoryKind {
+  COSTO_VENTA  // insumos, mercancía
+  OPERATIVO    // renta, luz, gas, sueldos
+  REMODELACION // inversión/CAPEX (patrón "Cuentas con Don Leo")
+  FINANCIERO   // intereses, comisiones bancarias
+}
+
+model Expense {
+  id            String   @id @default(cuid())
+  locationId    String
+  categoryId    String
+  counterpartyId String? // proveedor/acreedor si aplica
+  date          DateTime @db.Date
+  concept       String
+  amount        Decimal  @db.Decimal(12, 2)
+  method        PaymentMethod
+  paidFromCash  Boolean  @default(false) // salió de la caja del turno
+  evidenceUrl   String?
+  // Origen: evita doble captura — requisiciones y nómina generan esto solas
+  source        ExpenseSource @default(MANUAL)
+  purchaseId    String?  @unique
+  payrollEntryId String? @unique
+  createdById   String?
+  createdAt     DateTime @default(now())
+
+  location      Location @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  category      ExpenseCategory @relation(fields: [categoryId], references: [id])
+  counterparty  Counterparty? @relation(fields: [counterpartyId], references: [id])
+}
+
+enum ExpenseSource {
+  MANUAL
+  REQUISITION  // generado al recibir una requisición
+  PAYROLL      // generado al cerrar nómina
+  LOAN_PAYMENT // abono a acreedor/prestamista
+}
+
+// ============================================================
+// 4. PROVEEDORES, ACREEDORES, ADEUDOS Y PAGOS
+// ============================================================
+
+// Unifica proveedores y prestamistas/socios (caso "Don Leo")
+model Counterparty {
+  id         String   @id @default(cuid())
+  businessId String
+  name       String
+  type       CounterpartyType @default(SUPPLIER)
+  phone      String?
+  email      String?
+  rfc        String?
+  paymentTerms String? // "contado", "crédito 8 días", etc.
+  notes      String?
+  active     Boolean  @default(true)
+
+  business   Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  purchases  Purchase[]
+  payments   CounterpartyPayment[]
+  expenses   Expense[]
+  requisitions Requisition[]
+  priceHistory ItemPriceHistory[]
+
+  @@unique([businessId, name])
+}
+
+enum CounterpartyType {
+  SUPPLIER  // proveedor de insumos/servicios
+  LENDER    // prestamista o socio que mete dinero
+}
+
+// Cuenta por pagar: factura, nota de remisión o préstamo recibido
+model Purchase {
+  id            String   @id @default(cuid())
+  counterpartyId String
+  locationId    String?
+  kind          PurchaseKind @default(GOODS)
+  reference     String?  // folio de factura/nota
+  date          DateTime @db.Date
+  dueDate       DateTime? @db.Date
+  total         Decimal  @db.Decimal(12, 2)
+  paidAmount    Decimal  @default(0) @db.Decimal(12, 2)
+  status        PayableStatus @default(PENDING)
+  requisitionId String?  @unique
+  notes         String?
+
+  counterparty  Counterparty @relation(fields: [counterpartyId], references: [id])
+  payments      CounterpartyPayment[]
+}
+
+enum PurchaseKind {
+  GOODS    // insumos/mercancía
+  SERVICE  // servicios
+  LOAN     // dinero prestado (genera adeudo, no egreso)
+}
+
+enum PayableStatus {
+  PENDING
+  PARTIAL
+  PAID
+  CANCELLED
+}
+
+model CounterpartyPayment {
+  id            String   @id @default(cuid())
+  counterpartyId String
+  purchaseId    String?  // null = abono a cuenta general
+  date          DateTime @db.Date
+  amount        Decimal  @db.Decimal(12, 2)
+  method        PaymentMethod
+  evidenceUrl   String?
+  notes         String?
+  createdAt     DateTime @default(now())
+
+  counterparty  Counterparty @relation(fields: [counterpartyId], references: [id])
+  purchase      Purchase? @relation(fields: [purchaseId], references: [id])
+}
+
+// ============================================================
+// 5. CATÁLOGO DE INSUMOS Y REQUISICIONES COSTEADAS
+// ============================================================
+
+model Item {
+  id         String   @id @default(cuid())
+  businessId String
+  name       String   // "Aguacate", "Cerveza Victoria media 24pz"
+  unit       Unit     @default(PZA)
+  category   String?  // Abarrotes, Carnes, Bebidas, Desechables...
+  lastPrice  Decimal? @db.Decimal(12, 2) // se actualiza al recibir requisición
+  active     Boolean  @default(true)
+
+  business   Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  lines      RequisitionLine[]
+  priceHistory ItemPriceHistory[]
+
+  @@unique([businessId, name])
+}
+
+enum Unit {
+  PZA
+  KG
+  G
+  LT
+  ML
+  CAJA
+  PAQUETE
+  BOTELLA
+}
+
+// Historial de precios por proveedor → alertas de aumentos
+model ItemPriceHistory {
+  id            String   @id @default(cuid())
+  itemId        String
+  counterpartyId String?
+  date          DateTime @db.Date
+  unitPrice     Decimal  @db.Decimal(12, 2)
+
+  item          Item     @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  counterparty  Counterparty? @relation(fields: [counterpartyId], references: [id])
+}
+
+model Requisition {
+  id             String   @id @default(cuid())
+  locationId     String
+  counterpartyId String?  // proveedor sugerido/asignado
+  folio          Int      // consecutivo por negocio
+  status         RequisitionStatus @default(DRAFT)
+  requestedById  String
+  approvedById   String?
+  estimatedTotal Decimal  @default(0) @db.Decimal(12, 2) // costeo al crear
+  receivedTotal  Decimal? @db.Decimal(12, 2)             // costo real al recibir
+  notes          String?
+  createdAt      DateTime @default(now())
+  approvedAt     DateTime?
+  receivedAt     DateTime?
+
+  location       Location @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  counterparty   Counterparty? @relation(fields: [counterpartyId], references: [id])
+  lines          RequisitionLine[]
+}
+
+enum RequisitionStatus {
+  DRAFT
+  PENDING_APPROVAL
+  APPROVED
+  ORDERED
+  RECEIVED   // → crea Purchase (CxP) + Expense + actualiza lastPrice
+  CANCELLED
+}
+
+model RequisitionLine {
+  id            String   @id @default(cuid())
+  requisitionId String
+  itemId        String
+  qty           Decimal  @db.Decimal(12, 3)
+  unitPrice     Decimal  @db.Decimal(12, 2) // último precio conocido (costeo)
+  receivedQty   Decimal? @db.Decimal(12, 3)
+  actualPrice   Decimal? @db.Decimal(12, 2) // precio real de recepción
+
+  requisition   Requisition @relation(fields: [requisitionId], references: [id], onDelete: Cascade)
+  item          Item     @relation(fields: [itemId], references: [id])
+}
+
+// ============================================================
+// 6. NÓMINA DESDE CHECADOR
+// ============================================================
+
+model Employee {
+  id          String   @id @default(cuid())
+  businessId  String
+  locationId  String?
+  name        String
+  position    String   // Mesero, Cocinero, Barra, Gerente...
+  payType     PayType  @default(DAILY)
+  dailyRate   Decimal? @db.Decimal(12, 2)
+  hourlyRate  Decimal? @db.Decimal(12, 2)
+  biometricId String?  // ID en el checador para el import
+  active      Boolean  @default(true)
+  hiredAt     DateTime? @db.Date
+
+  business    Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  location    Location? @relation(fields: [locationId], references: [id])
+  attendance  AttendanceRecord[]
+  payrollEntries PayrollEntry[]
+}
+
+enum PayType {
+  DAILY   // sueldo por día trabajado
+  HOURLY  // por hora
+  FIXED   // fijo por periodo
+}
+
+model AttendanceRecord {
+  id         String   @id @default(cuid())
+  employeeId String
+  shiftId    String?
+  clockIn    DateTime
+  clockOut   DateTime?
+  source     AttendanceSource @default(BIOMETRIC)
+  // Corrección de timezone del checador se aplica en el import, no aquí
+  adjusted   Boolean  @default(false) // editado manualmente por gerente
+  notes      String?
+
+  employee   Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  shift      Shift?   @relation(fields: [shiftId], references: [id])
+}
+
+enum AttendanceSource {
+  BIOMETRIC  // import de archivo del checador
+  MANUAL
+}
+
+model PayrollPeriod {
+  id         String   @id @default(cuid())
+  businessId String
+  startDate  DateTime @db.Date
+  endDate    DateTime @db.Date
+  status     PayrollStatus @default(DRAFT)
+  closedAt   DateTime?
+
+  entries    PayrollEntry[]
+
+  @@unique([businessId, startDate, endDate])
+}
+
+enum PayrollStatus {
+  DRAFT
+  REVIEW
+  CLOSED   // → genera Expense por sucursal (source: PAYROLL)
+}
+
+model PayrollEntry {
+  id            String   @id @default(cuid())
+  periodId      String
+  employeeId    String
+  daysWorked    Decimal  @default(0) @db.Decimal(5, 2)
+  regularHours  Decimal  @default(0) @db.Decimal(7, 2)
+  overtimeHours Decimal  @default(0) @db.Decimal(7, 2)
+  basePay       Decimal  @db.Decimal(12, 2)
+  overtimePay   Decimal  @default(0) @db.Decimal(12, 2)
+  bonuses       Decimal  @default(0) @db.Decimal(12, 2) // Reto Taquiza, etc.
+  tips          Decimal  @default(0) @db.Decimal(12, 2)
+  deductions    Decimal  @default(0) @db.Decimal(12, 2)
+  total         Decimal  @db.Decimal(12, 2)
+  notes         String?
+
+  period        PayrollPeriod @relation(fields: [periodId], references: [id], onDelete: Cascade)
+  employee      Employee @relation(fields: [employeeId], references: [id])
+}
+
+// ============================================================
+// 7. PRE-LANZAMIENTO
+// ============================================================
+
+model WaitlistLead {
+  id           String   @id @default(cuid())
+  name         String
+  email        String   @unique
+  whatsapp     String?
+  businessName String?
+  businessType String?  // restaurante, bar, cafetería...
+  source       String?  // utm_source / campaña de Meta
+  createdAt    DateTime @default(now())
+}
