@@ -47,7 +47,7 @@ const css = `
   font-variation-settings:'wdth' 118;font-weight:900;
   font-size:clamp(38px,6vw,58px);line-height:1.04;letter-spacing:-.025em;
 }
-css.q-h1 em{
+.q-h1 em{
   font-style:normal;color:var(--tinta);
   background:linear-gradient(transparent 8%, var(--cuadro) 8%, var(--cuadro) 94%, transparent 94%);
   padding:0 .14em;border-radius:.08em;
