@@ -152,7 +152,7 @@ export function AppShellPage() {
 
   useEffect(() => {
     if (selectedBusiness?.locations?.length) {
-      setSelectedLocationId((prev) => prev || selectedBusiness.locations[0].id)
+      setSelectedLocationId(selectedBusiness.locations[0].id)
     } else {
       setSelectedLocationId('')
     }
