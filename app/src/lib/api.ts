@@ -1,10 +1,11 @@
 const API_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:4000'
 
 type RequestOptions = {
-  method?: 'GET' | 'POST'
+  method?: 'GET' | 'POST' | 'PATCH'
   body?: unknown
   token?: string
 }
+
 
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const response = await fetch(`${API_URL}${path}`, {
@@ -47,6 +48,8 @@ export type BusinessItem = {
   unit: 'PZA' | 'KG' | 'G' | 'LT' | 'ML' | 'CAJA' | 'PAQUETE' | 'BOTELLA'
   category: string | null
   lastPrice: string | null
+  defaultCounterpartyId: string | null
+  defaultCounterparty: { id: string; name: string; phone: string | null } | null
   active: boolean
 }
 
@@ -56,6 +59,8 @@ export type Counterparty = {
   name: string
   type: 'SUPPLIER' | 'LENDER'
   phone: string | null
+  paymentTerms: string | null
+  notes: string | null
   active: boolean
 }
 
@@ -120,6 +125,7 @@ export async function createBusinessItem({
     unit: BusinessItem['unit']
     category?: string
     lastPrice?: number
+    defaultCounterpartyId?: string
   }
 }) {
   return request<{ item: BusinessItem }>(`/businesses/${businessId}/items`, {
@@ -129,6 +135,30 @@ export async function createBusinessItem({
   })
 }
 
+
+export async function patchBusinessItem({
+  token,
+  businessId,
+  itemId,
+  payload,
+}: {
+  token: string
+  businessId: string
+  itemId: string
+  payload: {
+    name?: string
+    unit?: BusinessItem['unit']
+    category?: string | null
+    lastPrice?: number | null
+    defaultCounterpartyId?: string | null
+  }
+}) {
+  return request<{ item: BusinessItem }>(`/businesses/${businessId}/items/${itemId}`, {
+    method: 'PATCH',
+    token,
+    body: payload,
+  })
+}
 export async function getBusinessCounterparties({
   token,
   businessId,
@@ -140,6 +170,53 @@ export async function getBusinessCounterparties({
     method: 'GET',
     token,
   })
+}
+
+export async function createBusinessCounterparty({
+  token,
+  businessId,
+  payload,
+}: {
+  token: string
+  businessId: string
+  payload: {
+    name: string
+    phone?: string
+    paymentTerms?: string
+    notes?: string
+  }
+}) {
+  return request<{ counterparty: Counterparty }>(`/businesses/${businessId}/counterparties`, {
+    method: 'POST',
+    token,
+    body: payload,
+  })
+}
+
+export async function patchBusinessCounterparty({
+  token,
+  businessId,
+  counterpartyId,
+  payload,
+}: {
+  token: string
+  businessId: string
+  counterpartyId: string
+  payload: {
+    name?: string
+    phone?: string | null
+    paymentTerms?: string | null
+    notes?: string | null
+  }
+}) {
+  return request<{ counterparty: Counterparty }>(
+    `/businesses/${businessId}/counterparties/${counterpartyId}`,
+    {
+      method: 'PATCH',
+      token,
+      body: payload,
+    },
+  )
 }
 
 export async function getLocationRequisitions({

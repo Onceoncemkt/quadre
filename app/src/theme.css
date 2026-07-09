@@ -368,6 +368,16 @@ body {
   margin-top: 14px;
 }
 
+.q-requisition-primary-btn {
+  margin-top: 14px;
+}
+
+.q-catalog-grid {
+  margin-top: 16px;
+  display: grid;
+  gap: 14px;
+}
+
 .q-inline-quick-item {
   border-style: dashed;
   display: grid;
@@ -414,6 +424,20 @@ body {
 .q-receive-total {
   margin: 0;
   font-weight: 700;
+}
+
+.q-inline-phone-form {
+  margin-top: 8px;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.q-inline-phone-form input {
+  border: 1px solid var(--linea);
+  border-radius: 8px;
+  padding: 8px 10px;
+  width: 180px;
 }
 
 .q-empty-state {

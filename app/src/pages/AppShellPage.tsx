@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   approveRequisition,
   cancelRequisition,
+  createBusinessCounterparty,
   createBusinessItem,
   createBusinessMember,
   createRequisition,
@@ -12,6 +13,8 @@ import {
   getDashboardSummary,
   getBusinessMembers,
   getLocationRequisitions,
+  patchBusinessCounterparty,
+  patchBusinessItem,
   receiveRequisition,
   getShiftClosings,
   getWaitlist,
@@ -75,6 +78,7 @@ type ClosingDraft = {
 }
 
 type RequisitionsFilter = 'ACTIVE' | 'RECEIVED' | 'ALL'
+type RequisitionsTab = 'REQUISITIONS' | 'CATALOG'
 
 type RequisitionLineDraft = {
   itemId: string
@@ -227,6 +231,24 @@ function buildWhatsappUrl(lead: WaitlistLead) {
   return `https://wa.me/52${digits}?text=${encodeURIComponent(message)}`
 }
 
+function buildOrderWhatsappUrl({
+  phone,
+  businessName,
+  requisition,
+}: {
+  phone: string
+  businessName: string
+  requisition: RequisitionItem
+}) {
+  const digits = sanitizeDigits(phone)
+  if (!digits) return null
+  const linesText = requisition.lines
+    .map((line) => `• ${asDecimal(line.qty)} ${line.item.unit} ${line.item.name}`)
+    .join('\n')
+  const message = `¡Hola! Te mando pedido de ${businessName} 🙌\nRequisición #${requisition.folio}:\n${linesText}\n¿Me confirmas disponibilidad y total? ¡Gracias!`
+  return `https://wa.me/52${digits}?text=${encodeURIComponent(message)}`
+}
+
 function getTotals(draft: ClosingDraft) {
   const efectivoVentas = draft.lines
     .filter((line) => line.method === 'EFECTIVO')
@@ -267,8 +289,14 @@ export function AppShellPage() {
   const [loadingRequisitions, setLoadingRequisitions] = useState(false)
   const [requisitionsError, setRequisitionsError] = useState('')
   const [requisitionsFilter, setRequisitionsFilter] = useState<RequisitionsFilter>('ACTIVE')
+  const [activeRequisitionsTab, setActiveRequisitionsTab] = useState<RequisitionsTab>('REQUISITIONS')
   const [businessItems, setBusinessItems] = useState<BusinessItem[]>([])
   const [counterparties, setCounterparties] = useState<Counterparty[]>([])
+  const [savingCatalog, setSavingCatalog] = useState(false)
+  const [editingItemId, setEditingItemId] = useState('')
+  const [editingCounterpartyId, setEditingCounterpartyId] = useState('')
+  const [phoneCaptureCounterpartyId, setPhoneCaptureCounterpartyId] = useState('')
+  const [phoneCaptureValue, setPhoneCaptureValue] = useState('')
   const [showRequisitionForm, setShowRequisitionForm] = useState(false)
   const [savingRequisition, setSavingRequisition] = useState(false)
   const [requisitionFormError, setRequisitionFormError] = useState('')
@@ -278,6 +306,19 @@ export function AppShellPage() {
     name: '',
     unit: 'PZA',
     lastPrice: 0,
+  })
+  const [catalogItemDraft, setCatalogItemDraft] = useState({
+    name: '',
+    unit: 'PZA' as BusinessItem['unit'],
+    category: '',
+    lastPrice: 0,
+    defaultCounterpartyId: '',
+  })
+  const [catalogCounterpartyDraft, setCatalogCounterpartyDraft] = useState({
+    name: '',
+    phone: '',
+    paymentTerms: '',
+    notes: '',
   })
   const [savingQuickItem, setSavingQuickItem] = useState(false)
   const [quickItemError, setQuickItemError] = useState('')
@@ -454,6 +495,20 @@ export function AppShellPage() {
       .finally(() => setLoadingRequisitions(false))
   }, [activeItem, requisitionsFilter, selectedBusinessId, selectedLocationId, token])
 
+  useEffect(() => {
+    if (newRequisitionDraft.counterpartyId) return
+    const selectedItemIds = newRequisitionDraft.lines.map((line) => line.itemId).filter(Boolean)
+    if (!selectedItemIds.length || selectedItemIds.length !== newRequisitionDraft.lines.length) return
+    const defaults = selectedItemIds
+      .map((itemId) => businessItems.find((item) => item.id === itemId)?.defaultCounterpartyId || null)
+      .filter((value): value is string => Boolean(value))
+    if (defaults.length !== selectedItemIds.length) return
+    const uniqueDefaults = [...new Set(defaults)]
+    if (uniqueDefaults.length === 1) {
+      setNewRequisitionDraft((prev) => ({ ...prev, counterpartyId: uniqueDefaults[0] }))
+    }
+  }, [businessItems, newRequisitionDraft.counterpartyId, newRequisitionDraft.lines])
+
   const selectedLocationName = useMemo(() => {
     return selectedBusiness?.locations.find((location) => location.id === selectedLocationId)?.name || ''
   }, [selectedBusiness, selectedLocationId])
@@ -526,6 +581,16 @@ export function AppShellPage() {
         ? nextItems.filter((item) => item.status === 'PENDING_APPROVAL' || item.status === 'APPROVED')
         : nextItems
     setRequisitions(filteredItems)
+  }
+
+  async function refreshCatalogData() {
+    if (!token || !selectedBusinessId) return
+    const [itemsResponse, counterpartiesResponse] = await Promise.all([
+      getBusinessItems({ token, businessId: selectedBusinessId }),
+      getBusinessCounterparties({ token, businessId: selectedBusinessId }),
+    ])
+    setBusinessItems(itemsResponse.items || [])
+    setCounterparties(counterpartiesResponse.counterparties || [])
   }
 
   function resetNewRequisitionDraft() {
@@ -761,6 +826,157 @@ export function AppShellPage() {
       setQuickItemError(error instanceof Error ? error.message : 'No se pudo crear el insumo')
     } finally {
       setSavingQuickItem(false)
+    }
+  }
+
+  async function handleSaveCatalogItem(isEditing: boolean) {
+    if (!token || !selectedBusinessId) return
+    if (!catalogItemDraft.name.trim()) {
+      setRequisitionsError('El nombre del insumo es obligatorio')
+      return
+    }
+    setSavingCatalog(true)
+    setRequisitionsError('')
+    try {
+      if (isEditing && editingItemId) {
+        await patchBusinessItem({
+          token,
+          businessId: selectedBusinessId,
+          itemId: editingItemId,
+          payload: {
+            name: catalogItemDraft.name.trim(),
+            unit: catalogItemDraft.unit,
+            category: catalogItemDraft.category.trim() || null,
+            lastPrice: catalogItemDraft.lastPrice,
+            defaultCounterpartyId: catalogItemDraft.defaultCounterpartyId || null,
+          },
+        })
+      } else {
+        await createBusinessItem({
+          token,
+          businessId: selectedBusinessId,
+          payload: {
+            name: catalogItemDraft.name.trim(),
+            unit: catalogItemDraft.unit,
+            category: catalogItemDraft.category.trim() || undefined,
+            lastPrice: catalogItemDraft.lastPrice,
+            defaultCounterpartyId: catalogItemDraft.defaultCounterpartyId || undefined,
+          },
+        })
+      }
+      await refreshCatalogData()
+      setCatalogItemDraft({
+        name: '',
+        unit: 'PZA',
+        category: '',
+        lastPrice: 0,
+        defaultCounterpartyId: '',
+      })
+      setEditingItemId('')
+      setRequisitionsSuccess(isEditing ? 'Insumo actualizado ✓' : 'Insumo creado ✓')
+    } catch (error) {
+      setRequisitionsError(error instanceof Error ? error.message : 'No se pudo guardar el insumo')
+    } finally {
+      setSavingCatalog(false)
+    }
+  }
+
+  async function handleSaveCounterparty(isEditing: boolean) {
+    if (!token || !selectedBusinessId) return
+    if (!catalogCounterpartyDraft.name.trim()) {
+      setRequisitionsError('El nombre del proveedor es obligatorio')
+      return
+    }
+    if (!isEditing && !catalogCounterpartyDraft.phone.trim()) {
+      setRequisitionsError('El teléfono del proveedor es obligatorio')
+      return
+    }
+    setSavingCatalog(true)
+    setRequisitionsError('')
+    try {
+      if (isEditing && editingCounterpartyId) {
+        await patchBusinessCounterparty({
+          token,
+          businessId: selectedBusinessId,
+          counterpartyId: editingCounterpartyId,
+          payload: {
+            name: catalogCounterpartyDraft.name.trim(),
+            phone: catalogCounterpartyDraft.phone.trim() || null,
+            paymentTerms: catalogCounterpartyDraft.paymentTerms.trim() || null,
+            notes: catalogCounterpartyDraft.notes.trim() || null,
+          },
+        })
+      } else {
+        await createBusinessCounterparty({
+          token,
+          businessId: selectedBusinessId,
+          payload: {
+            name: catalogCounterpartyDraft.name.trim(),
+            phone: catalogCounterpartyDraft.phone.trim() || undefined,
+            paymentTerms: catalogCounterpartyDraft.paymentTerms.trim() || undefined,
+            notes: catalogCounterpartyDraft.notes.trim() || undefined,
+          },
+        })
+      }
+      await refreshCatalogData()
+      setCatalogCounterpartyDraft({
+        name: '',
+        phone: '',
+        paymentTerms: '',
+        notes: '',
+      })
+      setEditingCounterpartyId('')
+      setRequisitionsSuccess(isEditing ? 'Proveedor actualizado ✓' : 'Proveedor creado ✓')
+    } catch (error) {
+      setRequisitionsError(error instanceof Error ? error.message : 'No se pudo guardar el proveedor')
+    } finally {
+      setSavingCatalog(false)
+    }
+  }
+
+  async function handleSendOrderWhatsApp(requisition: RequisitionItem) {
+    if (!selectedBusiness) return
+    const counterparty = requisition.counterparty
+    if (!counterparty) return
+    if (!counterparty.phone) {
+      setPhoneCaptureCounterpartyId(counterparty.id)
+      setPhoneCaptureValue('')
+      return
+    }
+    const url = buildOrderWhatsappUrl({
+      phone: counterparty.phone,
+      businessName: selectedBusiness.name,
+      requisition,
+    })
+    if (url) window.open(url, '_blank', 'noopener,noreferrer')
+  }
+
+  async function handleSavePhoneAndSendOrder(requisition: RequisitionItem) {
+    if (!token || !selectedBusinessId || !phoneCaptureCounterpartyId || !selectedBusiness) return
+    setSavingCatalog(true)
+    setRequisitionsError('')
+    try {
+      const response = await patchBusinessCounterparty({
+        token,
+        businessId: selectedBusinessId,
+        counterpartyId: phoneCaptureCounterpartyId,
+        payload: {
+          phone: phoneCaptureValue.trim(),
+        },
+      })
+      await refreshCatalogData()
+      const url = buildOrderWhatsappUrl({
+        phone: response.counterparty.phone || phoneCaptureValue,
+        businessName: selectedBusiness.name,
+        requisition,
+      })
+      setPhoneCaptureCounterpartyId('')
+      setPhoneCaptureValue('')
+      if (url) window.open(url, '_blank', 'noopener,noreferrer')
+    } catch (error) {
+      setRequisitionsError(error instanceof Error ? error.message : 'No se pudo guardar el teléfono')
+    } finally {
+      setSavingCatalog(false)
     }
   }
 
@@ -1176,298 +1392,586 @@ export function AppShellPage() {
           <h1>Requisiciones</h1>
           <p>Gestión de insumos para {selectedLocationName || 'la sucursal seleccionada'}.</p>
         </div>
-        {canCreateRequisition ? (
-          <button
-            className="q-btn q-btn-inline"
-            type="button"
-            onClick={() => {
-              resetNewRequisitionDraft()
-              setQuickItemError('')
-              setShowRequisitionForm((prev) => !prev)
-            }}
-          >
-            {showRequisitionForm ? 'Cerrar formulario' : 'Nueva requisición'}
-          </button>
-        ) : null}
       </header>
 
       <div className="q-filter-row q-requisitions-filter-row">
-        {requisitionFilterOptions.map((option) => (
-          <button
-            key={option.key}
-            type="button"
-            className={`q-chip-btn ${requisitionsFilter === option.key ? 'active' : ''}`}
-            onClick={() => setRequisitionsFilter(option.key)}
-          >
-            {option.label}
-          </button>
-        ))}
+        <button
+          type="button"
+          className={`q-chip-btn ${activeRequisitionsTab === 'REQUISITIONS' ? 'active' : ''}`}
+          onClick={() => setActiveRequisitionsTab('REQUISITIONS')}
+        >
+          Requisiciones
+        </button>
+        <button
+          type="button"
+          className={`q-chip-btn ${activeRequisitionsTab === 'CATALOG' ? 'active' : ''}`}
+          onClick={() => setActiveRequisitionsTab('CATALOG')}
+        >
+          Catálogo
+        </button>
       </div>
-
-      {showRequisitionForm ? (
-        <section className="q-close-form-wrap">
-          <header className="q-close-form-header">
-            <h2>Nueva requisición</h2>
-            <button type="button" className="q-link-btn" onClick={() => setShowRequisitionForm(false)}>
-              Volver a la lista
-            </button>
-          </header>
-          <form className="q-close-form-grid" onSubmit={handleCreateRequisition}>
-            <section className="q-card q-close-form-main">
-              <div className="q-field-grid-2">
-                <label className="q-field">
-                  Proveedor (opcional)
-                  <select
-                    value={newRequisitionDraft.counterpartyId}
-                    onChange={(event) =>
-                      setNewRequisitionDraft((prev) => ({
-                        ...prev,
-                        counterpartyId: event.target.value,
-                      }))
-                    }
-                  >
-                    <option value="">Sin asignar</option>
-                    {counterparties.map((counterparty) => (
-                      <option key={counterparty.id} value={counterparty.id}>
-                        {counterparty.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="q-field">
-                  Notas
-                  <input
-                    type="text"
-                    placeholder="Opcional"
-                    value={newRequisitionDraft.notes}
-                    onChange={(event) =>
-                      setNewRequisitionDraft((prev) => ({ ...prev, notes: event.target.value }))
-                    }
-                  />
-                </label>
-              </div>
-
-              <h3>Líneas</h3>
-              {!businessItems.length ? (
-                <article className="q-card q-inline-quick-item">
-                  <h4>No hay insumos en catálogo</h4>
-                  <p>Crea un insumo rápido para continuar sin salir del flujo.</p>
-                  <div className="q-inline-quick-item-grid">
-                    <label className="q-field">
-                      Nombre
-                      <input
-                        type="text"
-                        required
-                        value={quickItemDraft.name}
-                        onChange={(event) =>
-                          setQuickItemDraft((prev) => ({ ...prev, name: event.target.value }))
-                        }
-                      />
-                    </label>
-                    <label className="q-field">
-                      Unidad
-                      <select
-                        value={quickItemDraft.unit}
-                        onChange={(event) =>
-                          setQuickItemDraft((prev) => ({
-                            ...prev,
-                            unit: event.target.value as BusinessItem['unit'],
-                          }))
-                        }
-                      >
-                        {quickItemUnits.map((unit) => (
-                          <option key={unit} value={unit}>
-                            {unit}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label className="q-field">
-                      Precio
-                      <input
-                        type="number"
-                        min={0}
-                        step="0.01"
-                        value={quickItemDraft.lastPrice}
-                        onChange={(event) =>
-                          setQuickItemDraft((prev) => ({ ...prev, lastPrice: asNumber(event.target.value) }))
-                        }
-                      />
-                    </label>
-                    <button className="q-btn q-btn-inline" type="button" onClick={handleCreateQuickItem} disabled={savingQuickItem}>
-                      {savingQuickItem ? 'Guardando...' : 'Crear insumo'}
-                    </button>
-                  </div>
-                  {quickItemError ? <p className="q-error-text">{quickItemError}</p> : null}
-                </article>
-              ) : null}
-
-              <div className="q-lines-wrap">
-                {newRequisitionDraft.lines.map((line, index) => (
-                  <article className="q-line-row" key={`req-line-${index}`}>
-                    <label className="q-field">
-                      Insumo
-                      <select
-                        value={line.itemId}
-                        onChange={(event) => {
-                          const itemId = event.target.value
-                          const selectedItem = businessItems.find((item) => item.id === itemId)
-                          updateRequisitionLine(index, {
-                            itemId,
-                            unitPrice: selectedItem ? asDecimal(selectedItem.lastPrice) : 0,
-                          })
-                        }}
-                      >
-                        <option value="">Selecciona un insumo</option>
-                        {businessItems.map((item) => (
-                          <option key={item.id} value={item.id}>
-                            {item.name} ({item.unit})
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label className="q-field">
-                      Cantidad
-                      <input
-                        type="number"
-                        min={0}
-                        step="0.001"
-                        value={line.qty}
-                        onChange={(event) => updateRequisitionLine(index, { qty: asNumber(event.target.value) })}
-                      />
-                    </label>
-                    <label className="q-field">
-                      Precio unitario
-                      <input
-                        type="number"
-                        min={0}
-                        step="0.01"
-                        value={line.unitPrice}
-                        onChange={(event) =>
-                          updateRequisitionLine(index, { unitPrice: asNumber(event.target.value) })
-                        }
-                      />
-                    </label>
-                    <button
-                      type="button"
-                      className="q-link-btn"
-                      onClick={() => removeRequisitionLine(index)}
-                      disabled={newRequisitionDraft.lines.length <= 1}
-                    >
-                      Quitar
-                    </button>
-                  </article>
-                ))}
-              </div>
-              <button type="button" className="q-link-btn" onClick={addRequisitionLine} disabled={!businessItems.length}>
-                + Agregar línea
-              </button>
-              {requisitionFormError ? <p className="q-error-text">{requisitionFormError}</p> : null}
-              <button className="q-btn q-btn-inline" type="submit" disabled={savingRequisition || !businessItems.length}>
-                {savingRequisition ? 'Guardando...' : 'Crear requisición'}
-              </button>
-            </section>
-
-            <aside className="q-card q-arqueo-panel">
-              <h3>Total estimado</h3>
-              <p>
-                <span>Estimado</span>
-                <strong className="q-mono">{formatMoney(requisitionEstimatedTotal)}</strong>
-              </p>
-            </aside>
-          </form>
-        </section>
-      ) : null}
 
       {requisitionsSuccess ? <p className="q-success-text">{requisitionsSuccess}</p> : null}
       {loadingRequisitions ? <p>Cargando requisiciones...</p> : null}
       {requisitionsError ? <p className="q-error-text">{requisitionsError}</p> : null}
 
-      {!loadingRequisitions && !requisitionsError && !requisitions.length ? (
-        <section className="q-card q-empty-state">
-          <h3>No hay requisiciones en este filtro</h3>
-          <p>Crea la primera requisición para empezar a controlar compras por sucursal.</p>
+      {activeRequisitionsTab === 'REQUISITIONS' ? (
+        <>
           {canCreateRequisition ? (
             <button
-              className="q-btn q-btn-inline"
+              className="q-btn q-btn-inline q-requisition-primary-btn"
               type="button"
               onClick={() => {
                 resetNewRequisitionDraft()
-                setShowRequisitionForm(true)
+                setQuickItemError('')
+                setShowRequisitionForm((prev) => !prev)
               }}
             >
-              Nueva requisición
+              {showRequisitionForm ? 'Cerrar formulario' : 'Nueva requisición'}
             </button>
           ) : null}
-        </section>
-      ) : null}
 
-      {!loadingRequisitions && !requisitionsError && requisitions.length ? (
-        <div className="q-table-wrap">
-          <table className="q-table">
-            <thead>
-              <tr>
-                <th>Folio</th>
-                <th>Proveedor</th>
-                <th>Solicitó</th>
-                <th className="is-right">Costeo estimado</th>
-                <th className="is-right">Recibido</th>
-                <th>Estado</th>
-                <th>Acciones</th>
-              </tr>
-            </thead>
-            <tbody>
-              {requisitions.map((requisition) => (
-                <tr key={requisition.id}>
-                  <td className="q-mono">#{requisition.folio}</td>
-                  <td>{requisition.counterparty?.name || 'Sin asignar'}</td>
-                  <td>{requisition.requestedBy?.name || '—'}</td>
-                  <td className="is-right q-mono">{formatMoney(asDecimal(requisition.estimatedTotal))}</td>
-                  <td className="is-right q-mono">
-                    {requisition.receivedTotal ? formatMoney(asDecimal(requisition.receivedTotal)) : '—'}
-                  </td>
-                  <td>
-                    <span className={`q-chip ${requisitionStatusChipClass(requisition.status)}`}>
-                      {formatRequisitionStatus(requisition.status)}
-                    </span>
-                  </td>
-                  <td>
-                    <div className="q-table-actions">
-                      {canApproveOrCancelRequisition && requisition.status === 'PENDING_APPROVAL' ? (
+          <div className="q-filter-row q-requisitions-filter-row">
+            {requisitionFilterOptions.map((option) => (
+              <button
+                key={option.key}
+                type="button"
+                className={`q-chip-btn ${requisitionsFilter === option.key ? 'active' : ''}`}
+                onClick={() => setRequisitionsFilter(option.key)}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+
+          {showRequisitionForm ? (
+            <section className="q-close-form-wrap">
+              <header className="q-close-form-header">
+                <h2>Nueva requisición</h2>
+                <button type="button" className="q-link-btn" onClick={() => setShowRequisitionForm(false)}>
+                  Volver a la lista
+                </button>
+              </header>
+              <form className="q-close-form-grid" onSubmit={handleCreateRequisition}>
+                <section className="q-card q-close-form-main">
+                  <div className="q-field-grid-2">
+                    <label className="q-field">
+                      Proveedor (opcional)
+                      <select
+                        value={newRequisitionDraft.counterpartyId}
+                        onChange={(event) =>
+                          setNewRequisitionDraft((prev) => ({
+                            ...prev,
+                            counterpartyId: event.target.value,
+                          }))
+                        }
+                      >
+                        <option value="">Sin asignar</option>
+                        {counterparties.map((counterparty) => (
+                          <option key={counterparty.id} value={counterparty.id}>
+                            {counterparty.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="q-field">
+                      Notas
+                      <input
+                        type="text"
+                        placeholder="Opcional"
+                        value={newRequisitionDraft.notes}
+                        onChange={(event) =>
+                          setNewRequisitionDraft((prev) => ({ ...prev, notes: event.target.value }))
+                        }
+                      />
+                    </label>
+                  </div>
+
+                  <h3>Líneas</h3>
+                  {!businessItems.length ? (
+                    <article className="q-card q-inline-quick-item">
+                      <h4>No hay insumos en catálogo</h4>
+                      <p>Crea un insumo rápido para continuar sin salir del flujo.</p>
+                      <div className="q-inline-quick-item-grid">
+                        <label className="q-field">
+                          Nombre
+                          <input
+                            type="text"
+                            required
+                            value={quickItemDraft.name}
+                            onChange={(event) =>
+                              setQuickItemDraft((prev) => ({ ...prev, name: event.target.value }))
+                            }
+                          />
+                        </label>
+                        <label className="q-field">
+                          Unidad
+                          <select
+                            value={quickItemDraft.unit}
+                            onChange={(event) =>
+                              setQuickItemDraft((prev) => ({
+                                ...prev,
+                                unit: event.target.value as BusinessItem['unit'],
+                              }))
+                            }
+                          >
+                            {quickItemUnits.map((unit) => (
+                              <option key={unit} value={unit}>
+                                {unit}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="q-field">
+                          Precio
+                          <input
+                            type="number"
+                            min={0}
+                            step="0.01"
+                            value={quickItemDraft.lastPrice}
+                            onChange={(event) =>
+                              setQuickItemDraft((prev) => ({ ...prev, lastPrice: asNumber(event.target.value) }))
+                            }
+                          />
+                        </label>
+                        <button className="q-btn q-btn-inline" type="button" onClick={handleCreateQuickItem} disabled={savingQuickItem}>
+                          {savingQuickItem ? 'Guardando...' : 'Crear insumo'}
+                        </button>
+                      </div>
+                      {quickItemError ? <p className="q-error-text">{quickItemError}</p> : null}
+                    </article>
+                  ) : null}
+
+                  <div className="q-lines-wrap">
+                    {newRequisitionDraft.lines.map((line, index) => (
+                      <article className="q-line-row" key={`req-line-${index}`}>
+                        <label className="q-field">
+                          Insumo
+                          <select
+                            value={line.itemId}
+                            onChange={(event) => {
+                              const itemId = event.target.value
+                              const selectedItem = businessItems.find((item) => item.id === itemId)
+                              updateRequisitionLine(index, {
+                                itemId,
+                                unitPrice: selectedItem ? asDecimal(selectedItem.lastPrice) : 0,
+                              })
+                            }}
+                          >
+                            <option value="">Selecciona un insumo</option>
+                            {businessItems.map((item) => (
+                              <option key={item.id} value={item.id}>
+                                {item.name} ({item.unit})
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="q-field">
+                          Cantidad
+                          <input
+                            type="number"
+                            min={0}
+                            step="0.001"
+                            value={line.qty}
+                            onChange={(event) => updateRequisitionLine(index, { qty: asNumber(event.target.value) })}
+                          />
+                        </label>
+                        <label className="q-field">
+                          Precio unitario
+                          <input
+                            type="number"
+                            min={0}
+                            step="0.01"
+                            value={line.unitPrice}
+                            onChange={(event) =>
+                              updateRequisitionLine(index, { unitPrice: asNumber(event.target.value) })
+                            }
+                          />
+                        </label>
                         <button
                           type="button"
                           className="q-link-btn"
-                          disabled={rowActionLoadingId === requisition.id}
-                          onClick={() => handleApproveRequisition(requisition.id)}
+                          onClick={() => removeRequisitionLine(index)}
+                          disabled={newRequisitionDraft.lines.length <= 1}
                         >
-                          Aprobar
+                          Quitar
                         </button>
-                      ) : null}
-                      {canReceiveRequisition && requisition.status === 'APPROVED' ? (
-                        <button type="button" className="q-link-btn" onClick={() => openReceiveModal(requisition)}>
-                          Recibir
-                        </button>
-                      ) : null}
-                      {canApproveOrCancelRequisition &&
-                      requisition.status !== 'RECEIVED' &&
-                      requisition.status !== 'CANCELLED' ? (
+                      </article>
+                    ))}
+                  </div>
+                  <button
+                    type="button"
+                    className="q-link-btn"
+                    onClick={addRequisitionLine}
+                    disabled={!businessItems.length}
+                  >
+                    + Agregar línea
+                  </button>
+                  {requisitionFormError ? <p className="q-error-text">{requisitionFormError}</p> : null}
+                  <button className="q-btn q-btn-inline" type="submit" disabled={savingRequisition || !businessItems.length}>
+                    {savingRequisition ? 'Guardando...' : 'Crear requisición'}
+                  </button>
+                </section>
+
+                <aside className="q-card q-arqueo-panel">
+                  <h3>Total estimado</h3>
+                  <p>
+                    <span>Estimado</span>
+                    <strong className="q-mono">{formatMoney(requisitionEstimatedTotal)}</strong>
+                  </p>
+                </aside>
+              </form>
+            </section>
+          ) : null}
+
+          {!loadingRequisitions && !requisitionsError && !requisitions.length ? (
+            <section className="q-card q-empty-state">
+              <h3>No hay requisiciones en este filtro</h3>
+              <p>Crea la primera requisición para empezar a controlar compras por sucursal.</p>
+              {canCreateRequisition ? (
+                <button
+                  className="q-btn q-btn-inline"
+                  type="button"
+                  onClick={() => {
+                    resetNewRequisitionDraft()
+                    setShowRequisitionForm(true)
+                  }}
+                >
+                  Nueva requisición
+                </button>
+              ) : null}
+            </section>
+          ) : null}
+
+          {!loadingRequisitions && !requisitionsError && requisitions.length ? (
+            <div className="q-table-wrap">
+              <table className="q-table">
+                <thead>
+                  <tr>
+                    <th>Folio</th>
+                    <th>Proveedor</th>
+                    <th>Solicitó</th>
+                    <th className="is-right">Costeo estimado</th>
+                    <th className="is-right">Recibido</th>
+                    <th>Estado</th>
+                    <th>Acciones</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {requisitions.map((requisition) => (
+                    <tr key={requisition.id}>
+                      <td className="q-mono">#{requisition.folio}</td>
+                      <td>{requisition.counterparty?.name || 'Sin asignar'}</td>
+                      <td>{requisition.requestedBy?.name || '—'}</td>
+                      <td className="is-right q-mono">{formatMoney(asDecimal(requisition.estimatedTotal))}</td>
+                      <td className="is-right q-mono">
+                        {requisition.receivedTotal ? formatMoney(asDecimal(requisition.receivedTotal)) : '—'}
+                      </td>
+                      <td>
+                        <span className={`q-chip ${requisitionStatusChipClass(requisition.status)}`}>
+                          {formatRequisitionStatus(requisition.status)}
+                        </span>
+                      </td>
+                      <td>
+                        <div className="q-table-actions">
+                          {canApproveOrCancelRequisition && requisition.status === 'PENDING_APPROVAL' ? (
+                            <button
+                              type="button"
+                              className="q-link-btn"
+                              disabled={rowActionLoadingId === requisition.id}
+                              onClick={() => handleApproveRequisition(requisition.id)}
+                            >
+                              Aprobar
+                            </button>
+                          ) : null}
+                          {canReceiveRequisition && requisition.status === 'APPROVED' ? (
+                            <button type="button" className="q-link-btn" onClick={() => openReceiveModal(requisition)}>
+                              Recibir
+                            </button>
+                          ) : null}
+                          {requisition.counterparty &&
+                          (requisition.status === 'PENDING_APPROVAL' || requisition.status === 'APPROVED') ? (
+                            <button type="button" className="q-link-btn" onClick={() => handleSendOrderWhatsApp(requisition)}>
+                              Enviar pedido
+                            </button>
+                          ) : null}
+                          {canApproveOrCancelRequisition &&
+                          requisition.status !== 'RECEIVED' &&
+                          requisition.status !== 'CANCELLED' ? (
+                            <button
+                              type="button"
+                              className="q-link-btn q-link-danger"
+                              disabled={rowActionLoadingId === requisition.id}
+                              onClick={() => handleCancelRequisition(requisition.id)}
+                            >
+                              Cancelar
+                            </button>
+                          ) : null}
+                        </div>
+                        {requisition.counterparty &&
+                        phoneCaptureCounterpartyId === requisition.counterparty.id &&
+                        !requisition.counterparty.phone ? (
+                          <div className="q-inline-phone-form">
+                            <input
+                              type="text"
+                              placeholder="Teléfono proveedor"
+                              value={phoneCaptureValue}
+                              onChange={(event) => setPhoneCaptureValue(event.target.value)}
+                            />
+                            <button
+                              type="button"
+                              className="q-link-btn"
+                              disabled={savingCatalog}
+                              onClick={() => handleSavePhoneAndSendOrder(requisition)}
+                            >
+                              Guardar y enviar
+                            </button>
+                          </div>
+                        ) : null}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : null}
+        </>
+      ) : (
+        <section className="q-catalog-grid">
+          <article className="q-card">
+            <h3>Insumos</h3>
+            <div className="q-inline-quick-item-grid">
+              <label className="q-field">
+                Nombre
+                <input
+                  type="text"
+                  value={catalogItemDraft.name}
+                  onChange={(event) => setCatalogItemDraft((prev) => ({ ...prev, name: event.target.value }))}
+                />
+              </label>
+              <label className="q-field">
+                Unidad
+                <select
+                  value={catalogItemDraft.unit}
+                  onChange={(event) =>
+                    setCatalogItemDraft((prev) => ({ ...prev, unit: event.target.value as BusinessItem['unit'] }))
+                  }
+                >
+                  {quickItemUnits.map((unit) => (
+                    <option key={unit} value={unit}>
+                      {unit}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="q-field">
+                Categoría
+                <input
+                  type="text"
+                  value={catalogItemDraft.category}
+                  onChange={(event) => setCatalogItemDraft((prev) => ({ ...prev, category: event.target.value }))}
+                />
+              </label>
+              <label className="q-field">
+                Último precio
+                <input
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={catalogItemDraft.lastPrice}
+                  onChange={(event) => setCatalogItemDraft((prev) => ({ ...prev, lastPrice: asNumber(event.target.value) }))}
+                />
+              </label>
+              <label className="q-field">
+                Proveedor habitual
+                <select
+                  value={catalogItemDraft.defaultCounterpartyId}
+                  onChange={(event) =>
+                    setCatalogItemDraft((prev) => ({ ...prev, defaultCounterpartyId: event.target.value }))
+                  }
+                >
+                  <option value="">Sin asignar</option>
+                  {counterparties.map((counterparty) => (
+                    <option key={counterparty.id} value={counterparty.id}>
+                      {counterparty.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button
+                type="button"
+                className="q-btn q-btn-inline"
+                disabled={savingCatalog}
+                onClick={() => handleSaveCatalogItem(Boolean(editingItemId))}
+              >
+                {editingItemId ? 'Guardar insumo' : 'Crear insumo'}
+              </button>
+              {editingItemId ? (
+                <button
+                  type="button"
+                  className="q-link-btn"
+                  onClick={() => {
+                    setEditingItemId('')
+                    setCatalogItemDraft({
+                      name: '',
+                      unit: 'PZA',
+                      category: '',
+                      lastPrice: 0,
+                      defaultCounterpartyId: '',
+                    })
+                  }}
+                >
+                  Cancelar edición
+                </button>
+              ) : null}
+            </div>
+            <div className="q-table-wrap">
+              <table className="q-table">
+                <thead>
+                  <tr>
+                    <th>Nombre</th>
+                    <th>Unidad</th>
+                    <th>Categoría</th>
+                    <th className="is-right">Último precio</th>
+                    <th>Proveedor habitual</th>
+                    <th>Acciones</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {businessItems.map((item) => (
+                    <tr key={item.id}>
+                      <td>{item.name}</td>
+                      <td>{item.unit}</td>
+                      <td>{item.category || '—'}</td>
+                      <td className="is-right q-mono">{formatMoney(asDecimal(item.lastPrice))}</td>
+                      <td>{item.defaultCounterparty?.name || 'Sin asignar'}</td>
+                      <td>
                         <button
                           type="button"
-                          className="q-link-btn q-link-danger"
-                          disabled={rowActionLoadingId === requisition.id}
-                          onClick={() => handleCancelRequisition(requisition.id)}
+                          className="q-link-btn"
+                          onClick={() => {
+                            setEditingItemId(item.id)
+                            setCatalogItemDraft({
+                              name: item.name,
+                              unit: item.unit,
+                              category: item.category || '',
+                              lastPrice: asDecimal(item.lastPrice),
+                              defaultCounterpartyId: item.defaultCounterpartyId || '',
+                            })
+                          }}
                         >
-                          Cancelar
+                          Editar
                         </button>
-                      ) : null}
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      ) : null}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </article>
+
+          <article className="q-card">
+            <h3>Proveedores</h3>
+            <div className="q-inline-quick-item-grid">
+              <label className="q-field">
+                Nombre
+                <input
+                  type="text"
+                  value={catalogCounterpartyDraft.name}
+                  onChange={(event) => setCatalogCounterpartyDraft((prev) => ({ ...prev, name: event.target.value }))}
+                />
+              </label>
+              <label className="q-field">
+                Teléfono
+                <input
+                  type="text"
+                  value={catalogCounterpartyDraft.phone}
+                  onChange={(event) => setCatalogCounterpartyDraft((prev) => ({ ...prev, phone: event.target.value }))}
+                />
+              </label>
+              <label className="q-field">
+                Términos
+                <input
+                  type="text"
+                  value={catalogCounterpartyDraft.paymentTerms}
+                  onChange={(event) =>
+                    setCatalogCounterpartyDraft((prev) => ({ ...prev, paymentTerms: event.target.value }))
+                  }
+                />
+              </label>
+              <label className="q-field">
+                Notas
+                <input
+                  type="text"
+                  value={catalogCounterpartyDraft.notes}
+                  onChange={(event) => setCatalogCounterpartyDraft((prev) => ({ ...prev, notes: event.target.value }))}
+                />
+              </label>
+              <button
+                type="button"
+                className="q-btn q-btn-inline"
+                disabled={savingCatalog}
+                onClick={() => handleSaveCounterparty(Boolean(editingCounterpartyId))}
+              >
+                {editingCounterpartyId ? 'Guardar proveedor' : 'Crear proveedor'}
+              </button>
+              {editingCounterpartyId ? (
+                <button
+                  type="button"
+                  className="q-link-btn"
+                  onClick={() => {
+                    setEditingCounterpartyId('')
+                    setCatalogCounterpartyDraft({
+                      name: '',
+                      phone: '',
+                      paymentTerms: '',
+                      notes: '',
+                    })
+                  }}
+                >
+                  Cancelar edición
+                </button>
+              ) : null}
+            </div>
+            <div className="q-table-wrap">
+              <table className="q-table">
+                <thead>
+                  <tr>
+                    <th>Nombre</th>
+                    <th>Teléfono</th>
+                    <th>Acciones</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {counterparties.map((counterparty) => (
+                    <tr key={counterparty.id}>
+                      <td>{counterparty.name}</td>
+                      <td>{counterparty.phone || '—'}</td>
+                      <td>
+                        <button
+                          type="button"
+                          className="q-link-btn"
+                          onClick={() => {
+                            setEditingCounterpartyId(counterparty.id)
+                            setCatalogCounterpartyDraft({
+                              name: counterparty.name,
+                              phone: counterparty.phone || '',
+                              paymentTerms: counterparty.paymentTerms || '',
+                              notes: counterparty.notes || '',
+                            })
+                          }}
+                        >
+                          Editar
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </article>
+        </section>
+      )}
 
       {showReceiveModal && receiveTarget ? (
         <div className="q-modal-overlay" role="presentation" onClick={closeReceiveModal}>
