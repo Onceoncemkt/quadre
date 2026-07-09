@@ -65,6 +65,57 @@ export type Counterparty = {
   active: boolean
 }
 
+export type PurchaseItem = {
+  id: string
+  counterpartyId: string
+  locationId: string | null
+  kind: 'GOODS' | 'SERVICE' | 'LOAN'
+  reference: string | null
+  date: string
+  dueDate: string | null
+  total: string
+  paidAmount: string
+  status: 'PENDING' | 'PARTIAL' | 'PAID' | 'CANCELLED'
+  requisitionId: string | null
+  notes: string | null
+}
+
+export type CounterpartyPaymentItem = {
+  id: string
+  counterpartyId: string
+  purchaseId: string | null
+  date: string
+  amount: string
+  method: 'EFECTIVO' | 'TARJETA' | 'TRANSFERENCIA' | 'APP' | 'OTRO'
+  evidenceUrl: string | null
+  notes: string | null
+  createdAt: string
+}
+
+export type PayablesSummary = {
+  items: Array<{
+    counterparty: {
+      id: string
+      name: string
+      type: 'SUPPLIER' | 'LENDER'
+      phone: string | null
+    }
+    saldo: number
+    purchases: Array<{
+      id: string
+      kind: 'GOODS' | 'SERVICE' | 'LOAN'
+      reference: string | null
+      date: string
+      dueDate: string | null
+      total: string
+      paidAmount: string
+      status: 'PENDING' | 'PARTIAL' | 'PAID' | 'CANCELLED'
+    }>
+  }>
+  totalPorPagar: number
+  vencidos: number
+}
+
 export type RequisitionStatus =
   | 'DRAFT'
   | 'PENDING_APPROVAL'
@@ -262,6 +313,85 @@ export async function deleteBusinessCounterparty({
       token,
     },
   )
+}
+
+export async function getBusinessPayables({
+  token,
+  businessId,
+}: {
+  token: string
+  businessId: string
+}) {
+  return request<PayablesSummary>(`/businesses/${businessId}/payables`, {
+    method: 'GET',
+    token,
+  })
+}
+
+export async function createBusinessPurchase({
+  token,
+  businessId,
+  payload,
+}: {
+  token: string
+  businessId: string
+  payload: {
+    counterpartyId: string
+    kind: 'GOODS' | 'SERVICE' | 'LOAN'
+    reference?: string
+    date: string
+    dueDate?: string
+    total: number
+    notes?: string
+    locationId?: string
+  }
+}) {
+  return request<{ purchase: PurchaseItem }>(`/businesses/${businessId}/purchases`, {
+    method: 'POST',
+    token,
+    body: payload,
+  })
+}
+
+export async function createPurchasePayment({
+  token,
+  purchaseId,
+  payload,
+}: {
+  token: string
+  purchaseId: string
+  payload: {
+    date: string
+    amount: number
+    method: 'EFECTIVO' | 'TARJETA' | 'TRANSFERENCIA' | 'APP' | 'OTRO'
+    evidenceUrl?: string
+    notes?: string
+    locationId?: string
+    categoryId?: string
+  }
+}) {
+  return request<{
+    payment: CounterpartyPaymentItem
+    purchase: PurchaseItem
+    expense: ExpenseItem | null
+  }>(`/purchases/${purchaseId}/payments`, {
+    method: 'POST',
+    token,
+    body: payload,
+  })
+}
+
+export async function getPurchasePayments({
+  token,
+  purchaseId,
+}: {
+  token: string
+  purchaseId: string
+}) {
+  return request<{ items: CounterpartyPaymentItem[] }>(`/purchases/${purchaseId}/payments`, {
+    method: 'GET',
+    token,
+  })
 }
 
 export async function getLocationRequisitions({

@@ -6,9 +6,11 @@ import {
   createBusinessCounterparty,
   createBusinessItem,
   createBusinessMember,
+  createBusinessPurchase,
   createEnvelope,
   createEnvelopeDeposit,
   createExpense,
+  createPurchasePayment,
   createRequisition,
   createShiftClosing,
   deleteEnvelope,
@@ -22,9 +24,11 @@ import {
   getBusinessItems,
   getDashboardSummary,
   getBusinessMembers,
+  getBusinessPayables,
   getLocationExpenses,
   getLocationPnl,
   getLocationRequisitions,
+  getPurchasePayments,
   payEnvelope,
   patchBusinessCounterparty,
   patchBusinessItem,
@@ -35,6 +39,7 @@ import {
   withdrawEnvelope,
   type BusinessMember,
   type BusinessItem,
+  type CounterpartyPaymentItem,
   type Counterparty,
   type DashboardSummary,
   type EnvelopeItem,
@@ -42,6 +47,7 @@ import {
   type ExpenseCategory,
   type ExpenseItem,
   type EnvelopesSummary,
+  type PayablesSummary,
   type PnlSummary,
   type RequisitionItem,
   type RequisitionStatus,
@@ -175,6 +181,26 @@ type EnvelopeTransferDraft = {
   note: string
 }
 
+type PayableCreateDraft = {
+  counterpartyId: string
+  kind: 'GOODS' | 'SERVICE' | 'LOAN'
+  reference: string
+  date: string
+  dueDate: string
+  total: number
+  notes: string
+  locationId: string
+}
+
+type PayablePaymentDraft = {
+  date: string
+  amount: number
+  method: 'EFECTIVO' | 'TARJETA' | 'TRANSFERENCIA' | 'APP' | 'OTRO'
+  notes: string
+  locationId: string
+  categoryId: string
+}
+
 const requisitionFilterOptions: Array<{ key: RequisitionsFilter; label: string }> = [
   { key: 'ACTIVE', label: 'Activas' },
   { key: 'RECEIVED', label: 'Recibidas' },
@@ -301,6 +327,26 @@ function formatTeamRole(role: 'OWNER' | 'ADMIN' | 'MANAGER' | 'STAFF') {
   if (role === 'MANAGER') return 'Gerente'
   return 'Staff'
 }
+
+function formatPayableKind(kind: 'GOODS' | 'SERVICE' | 'LOAN') {
+  if (kind === 'GOODS') return 'Insumo'
+  if (kind === 'SERVICE') return 'Servicio'
+  return 'Préstamo'
+}
+
+function formatPayableStatus(status: 'PENDING' | 'PARTIAL' | 'PAID' | 'CANCELLED') {
+  if (status === 'PENDING') return 'Pendiente'
+  if (status === 'PARTIAL') return 'Parcial'
+  if (status === 'PAID') return 'Pagado'
+  return 'Cancelado'
+}
+
+function payableStatusChipClass(status: 'PENDING' | 'PARTIAL' | 'PAID' | 'CANCELLED') {
+  if (status === 'PAID') return 'ok'
+  if (status === 'CANCELLED') return 'falt'
+  if (status === 'PARTIAL') return 'pending'
+  return 'pending'
+}
 function formatDateFromIsoString(dateValue: string) {
   const dateOnly = dateValue.slice(0, 10)
   const [year, month, day] = dateOnly.split('-')
@@ -404,6 +450,18 @@ export function AppShellPage() {
   const [loadingExpenses, setLoadingExpenses] = useState(false)
   const [expensesError, setExpensesError] = useState('')
   const [expensesSuccess, setExpensesSuccess] = useState('')
+  const [payablesSummary, setPayablesSummary] = useState<PayablesSummary | null>(null)
+  const [loadingPayables, setLoadingPayables] = useState(false)
+  const [payablesError, setPayablesError] = useState('')
+  const [payablesSuccess, setPayablesSuccess] = useState('')
+  const [savingPayables, setSavingPayables] = useState(false)
+  const [showPayableForm, setShowPayableForm] = useState(false)
+  const [expandedCounterpartyId, setExpandedCounterpartyId] = useState('')
+  const [activePayPurchaseId, setActivePayPurchaseId] = useState('')
+  const [purchasePaymentsByPurchase, setPurchasePaymentsByPurchase] = useState<
+    Record<string, CounterpartyPaymentItem[]>
+  >({})
+  const [loadingPaymentsByPurchase, setLoadingPaymentsByPurchase] = useState<Record<string, boolean>>({})
   const [pnlSummary, setPnlSummary] = useState<PnlSummary | null>(null)
   const [loadingPnl, setLoadingPnl] = useState(false)
   const [pnlError, setPnlError] = useState('')
@@ -448,6 +506,19 @@ export function AppShellPage() {
     counterpartyId: '',
     paidFromCash: false,
   })
+  const [payableCreateDraft, setPayableCreateDraft] = useState<PayableCreateDraft>({
+    counterpartyId: '',
+    kind: 'GOODS',
+    reference: '',
+    date: getTodayDateInput(),
+    dueDate: getTodayDateInput(),
+    total: 0,
+    notes: '',
+    locationId: '',
+  })
+  const [payablePaymentDraftByPurchase, setPayablePaymentDraftByPurchase] = useState<
+    Record<string, PayablePaymentDraft>
+  >({})
   const [requisitions, setRequisitions] = useState<RequisitionItem[]>([])
   const [loadingRequisitions, setLoadingRequisitions] = useState(false)
   const [requisitionsError, setRequisitionsError] = useState('')
@@ -654,6 +725,34 @@ export function AppShellPage() {
   }, [activeItem, expensesCategoryFilter, gastosMonth, selectedLocationId, token])
 
   useEffect(() => {
+    if (activeItem !== 'Proveedores y adeudos' || !token || !selectedBusinessId) return
+    setLoadingPayables(true)
+    setPayablesError('')
+    Promise.all([
+      getBusinessPayables({ token, businessId: selectedBusinessId }),
+      getBusinessCounterparties({ token, businessId: selectedBusinessId }),
+      getExpenseCategories({ token, businessId: selectedBusinessId }),
+    ])
+      .then(([payablesResponse, counterpartiesResponse, categoriesResponse]) => {
+        setPayablesSummary(payablesResponse)
+        const nextCounterparties = counterpartiesResponse.counterparties || []
+        setCounterparties(nextCounterparties)
+        const nextCategories = categoriesResponse.items || []
+        setExpenseCategories(nextCategories)
+        setPayableCreateDraft((prev) => ({
+          ...prev,
+          counterpartyId: prev.counterpartyId || nextCounterparties.find((item) => item.active)?.id || '',
+          locationId: prev.locationId || selectedLocationId,
+        }))
+      })
+      .catch((error) => {
+        setPayablesSummary(null)
+        setPayablesError(error instanceof Error ? error.message : 'No se pudieron cargar los adeudos')
+      })
+      .finally(() => setLoadingPayables(false))
+  }, [activeItem, selectedBusinessId, selectedLocationId, token])
+
+  useEffect(() => {
     if (activeItem !== 'P&L y reportes' || !token || !selectedLocationId) return
     setLoadingPnl(true)
     setPnlError('')
@@ -797,6 +896,13 @@ export function AppShellPage() {
     () => expenses.reduce((sum, item) => sum + asDecimal(item.amount), 0),
     [expenses],
   )
+  const payablesItems = useMemo(() => payablesSummary?.items || [], [payablesSummary])
+  const payablesTotal = useMemo(() => asDecimal(payablesSummary?.totalPorPagar || 0), [payablesSummary])
+  const payablesOverdue = useMemo(() => asDecimal(payablesSummary?.vencidos || 0), [payablesSummary])
+  const activePayablesCounterparties = useMemo(
+    () => counterparties.filter((counterparty) => counterparty.active),
+    [counterparties],
+  )
   const pnlOperativeBreakdown = useMemo(
     () => (pnlSummary?.desgloseCategorias || []).filter((item) => item.kind === 'OPERATIVO'),
     [pnlSummary],
@@ -881,6 +987,125 @@ export function AppShellPage() {
     setClosings(response.items)
   }
 
+  function resetPayableCreateDraft() {
+    setPayableCreateDraft({
+      counterpartyId: activePayablesCounterparties[0]?.id || '',
+      kind: 'GOODS',
+      reference: '',
+      date: getTodayDateInput(),
+      dueDate: getTodayDateInput(),
+      total: 0,
+      notes: '',
+      locationId: selectedLocationId,
+    })
+  }
+
+  function getPayablePaymentDraft(purchase: PayablesSummary['items'][number]['purchases'][number]): PayablePaymentDraft {
+    const saldo = Math.max(asDecimal(purchase.total) - asDecimal(purchase.paidAmount), 0)
+    return (
+      payablePaymentDraftByPurchase[purchase.id] || {
+        date: getTodayDateInput(),
+        amount: saldo,
+        method: 'TRANSFERENCIA',
+        notes: '',
+        locationId: selectedLocationId,
+        categoryId: expenseCategories.find((category) => category.name === 'Otros gastos')?.id || expenseCategories[0]?.id || '',
+      }
+    )
+  }
+
+  async function handleCreatePayable(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!token || !selectedBusinessId) return
+    if (!payableCreateDraft.counterpartyId || payableCreateDraft.total <= 0) {
+      setPayablesError('Counterparty y monto son obligatorios')
+      return
+    }
+    setSavingPayables(true)
+    setPayablesError('')
+    setPayablesSuccess('')
+    try {
+      await createBusinessPurchase({
+        token,
+        businessId: selectedBusinessId,
+        payload: {
+          counterpartyId: payableCreateDraft.counterpartyId,
+          kind: payableCreateDraft.kind,
+          reference: payableCreateDraft.reference.trim() || undefined,
+          date: payableCreateDraft.date,
+          dueDate: payableCreateDraft.dueDate || undefined,
+          total: payableCreateDraft.total,
+          notes: payableCreateDraft.notes.trim() || undefined,
+          locationId: payableCreateDraft.locationId || undefined,
+        },
+      })
+      await refreshPayablesData()
+      setPayablesSuccess('Adeudo registrado ✓')
+      setShowPayableForm(false)
+      resetPayableCreateDraft()
+    } catch (error) {
+      setPayablesError(error instanceof Error ? error.message : 'No se pudo registrar el adeudo')
+    } finally {
+      setSavingPayables(false)
+    }
+  }
+
+  async function loadPurchasePayments(purchaseId: string) {
+    if (!token) return
+    setLoadingPaymentsByPurchase((prev) => ({ ...prev, [purchaseId]: true }))
+    try {
+      const response = await getPurchasePayments({ token, purchaseId })
+      setPurchasePaymentsByPurchase((prev) => ({ ...prev, [purchaseId]: response.items || [] }))
+    } catch (error) {
+      setPayablesError(error instanceof Error ? error.message : 'No se pudo cargar historial de pagos')
+    } finally {
+      setLoadingPaymentsByPurchase((prev) => ({ ...prev, [purchaseId]: false }))
+    }
+  }
+
+  async function handlePayPurchase(purchase: PayablesSummary['items'][number]['purchases'][number]) {
+    if (!token) return
+    const draft = getPayablePaymentDraft(purchase)
+    if (draft.amount <= 0) {
+      setPayablesError('Captura un monto válido para abonar')
+      return
+    }
+    if (purchase.kind === 'LOAN' && !draft.categoryId) {
+      setPayablesError('Selecciona una categoría para el gasto del préstamo')
+      return
+    }
+
+    setSavingPayables(true)
+    setPayablesError('')
+    setPayablesSuccess('')
+    try {
+      await createPurchasePayment({
+        token,
+        purchaseId: purchase.id,
+        payload: {
+          date: draft.date,
+          amount: draft.amount,
+          method: draft.method,
+          notes: draft.notes.trim() || undefined,
+          locationId: draft.locationId || undefined,
+          categoryId: purchase.kind === 'LOAN' ? draft.categoryId || undefined : undefined,
+        },
+      })
+      await refreshPayablesData()
+      await loadPurchasePayments(purchase.id)
+      setPayablesSuccess(
+        purchase.kind === 'LOAN'
+          ? 'Abono registrado y gasto creado ✓'
+          : 'Pago registrado — adeudo actualizado ✓',
+      )
+      setActivePayPurchaseId('')
+    } catch (error) {
+      setPayablesError(error instanceof Error ? error.message : 'No se pudo registrar el pago')
+    } finally {
+      setSavingPayables(false)
+    }
+  }
+
   async function refreshRequisitionsData() {
     if (!token || !selectedBusinessId || !selectedLocationId) return
     const requisitionsResponse =
@@ -931,6 +1156,13 @@ export function AppShellPage() {
       categoryId: expensesCategoryFilter || undefined,
     })
     setExpenses(response.items || [])
+  }
+
+  async function refreshPayablesData() {
+    if (!token || !selectedBusinessId) return
+    const response = await getBusinessPayables({ token, businessId: selectedBusinessId })
+    setPayablesSummary(response)
+    return response
   }
 
   async function refreshEnvelopesData() {
@@ -2865,6 +3097,320 @@ export function AppShellPage() {
       ) : null}
     </section>
   )
+  const renderPayables = () => (
+    <section className="q-shift-closings">
+      <header className="q-section-header">
+        <div>
+          <h1>Proveedores y adeudos</h1>
+          <p>Control de cuentas por pagar y pagos a proveedores/prestamistas.</p>
+        </div>
+        {canCreateEnvelope ? (
+          <button
+            className="q-btn q-btn-inline"
+            type="button"
+            onClick={() => {
+              resetPayableCreateDraft()
+              setShowPayableForm((prev) => !prev)
+            }}
+          >
+            {showPayableForm ? 'Cerrar formulario' : 'Registrar adeudo'}
+          </button>
+        ) : null}
+      </header>
+
+      <div className="q-payables-kpis">
+        <article className="q-card q-payables-kpi">
+          <span>Total por pagar</span>
+          <strong className="q-mono">{formatMoney(payablesTotal)}</strong>
+        </article>
+        <article className={`q-card q-payables-kpi ${payablesOverdue > 0 ? 'falt' : 'ok'}`}>
+          <span>Vencido</span>
+          <strong className="q-mono">{formatMoney(payablesOverdue)}</strong>
+        </article>
+      </div>
+
+      {payablesSuccess ? <p className="q-success-text">{payablesSuccess}</p> : null}
+      {payablesError ? <p className="q-error-text">{payablesError}</p> : null}
+
+      {showPayableForm ? (
+        <form className="q-card q-payables-form" onSubmit={handleCreatePayable}>
+          <div className="q-field-grid-3">
+            <label className="q-field">
+              Acreedor
+              <select
+                value={payableCreateDraft.counterpartyId}
+                onChange={(event) => setPayableCreateDraft((prev) => ({ ...prev, counterpartyId: event.target.value }))}
+                required
+              >
+                <option value="">Selecciona acreedor</option>
+                {activePayablesCounterparties.map((counterparty) => (
+                  <option key={counterparty.id} value={counterparty.id}>
+                    {counterparty.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="q-field">
+              Tipo
+              <select
+                value={payableCreateDraft.kind}
+                onChange={(event) =>
+                  setPayableCreateDraft((prev) => ({
+                    ...prev,
+                    kind: event.target.value as PayableCreateDraft['kind'],
+                  }))
+                }
+              >
+                <option value="GOODS">Insumo</option>
+                <option value="SERVICE">Servicio</option>
+                <option value="LOAN">Préstamo</option>
+              </select>
+            </label>
+            <label className="q-field">
+              Referencia
+              <input
+                type="text"
+                value={payableCreateDraft.reference}
+                onChange={(event) => setPayableCreateDraft((prev) => ({ ...prev, reference: event.target.value }))}
+              />
+            </label>
+          </div>
+          <div className="q-field-grid-3">
+            <label className="q-field">
+              Fecha
+              <input
+                type="date"
+                value={payableCreateDraft.date}
+                onChange={(event) => setPayableCreateDraft((prev) => ({ ...prev, date: event.target.value }))}
+                required
+              />
+            </label>
+            <label className="q-field">
+              Vence
+              <input
+                type="date"
+                value={payableCreateDraft.dueDate}
+                onChange={(event) => setPayableCreateDraft((prev) => ({ ...prev, dueDate: event.target.value }))}
+              />
+            </label>
+            <label className="q-field">
+              Monto total
+              <input
+                type="number"
+                min={0}
+                step="0.01"
+                value={payableCreateDraft.total}
+                onChange={(event) => setPayableCreateDraft((prev) => ({ ...prev, total: asNumber(event.target.value) }))}
+                required
+              />
+            </label>
+          </div>
+          <div className="q-field-grid-3">
+            <label className="q-field">
+              Sucursal
+              <select
+                value={payableCreateDraft.locationId}
+                onChange={(event) => setPayableCreateDraft((prev) => ({ ...prev, locationId: event.target.value }))}
+              >
+                <option value="">Sin sucursal</option>
+                {(selectedBusiness?.locations || []).map((location) => (
+                  <option key={location.id} value={location.id}>
+                    {location.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="q-field">
+              Notas
+              <input
+                type="text"
+                value={payableCreateDraft.notes}
+                onChange={(event) => setPayableCreateDraft((prev) => ({ ...prev, notes: event.target.value }))}
+              />
+            </label>
+          </div>
+          <button className="q-btn q-btn-inline" type="submit" disabled={savingPayables}>
+            {savingPayables ? 'Guardando...' : 'Guardar adeudo'}
+          </button>
+        </form>
+      ) : null}
+
+      {loadingPayables ? <p>Cargando adeudos...</p> : null}
+
+      {!loadingPayables && !payablesItems.length ? (
+        <section className="q-card q-empty-state">
+          <h3>No hay adeudos activos</h3>
+          <p>Cuando registres compras o préstamos pendientes aparecerán aquí.</p>
+        </section>
+      ) : null}
+
+      {!loadingPayables && payablesItems.length ? (
+        <div className="q-payables-grid">
+          {payablesItems.map((row) => {
+            const isExpanded = expandedCounterpartyId === row.counterparty.id
+            return (
+              <article key={row.counterparty.id} className="q-card q-payable-card">
+                <div className="q-payable-top">
+                  <div>
+                    <h3>{row.counterparty.name}</h3>
+                    <span className={`q-chip ${row.counterparty.type === 'LENDER' ? 'pending' : 'ok'}`}>
+                      {row.counterparty.type === 'LENDER' ? 'Prestamista' : 'Proveedor'}
+                    </span>
+                  </div>
+                  <strong className="q-mono q-payable-saldo">{formatMoney(row.saldo)}</strong>
+                </div>
+                <button
+                  type="button"
+                  className="q-link-btn"
+                  onClick={() => setExpandedCounterpartyId((prev) => (prev === row.counterparty.id ? '' : row.counterparty.id))}
+                >
+                  {isExpanded ? 'Ocultar detalle' : 'Ver detalle'}
+                </button>
+
+                {isExpanded ? (
+                  <div className="q-payable-purchases">
+                    {row.purchases.map((purchase) => {
+                      const saldo = Math.max(asDecimal(purchase.total) - asDecimal(purchase.paidAmount), 0)
+                      const isOverdue = Boolean(purchase.dueDate && purchase.dueDate.slice(0, 10) < getTodayDateInput())
+                      const draft = getPayablePaymentDraft(purchase)
+                      const payments = purchasePaymentsByPurchase[purchase.id] || []
+                      return (
+                        <article className="q-payable-purchase-row" key={purchase.id}>
+                          <div className="q-payable-purchase-head">
+                            <div>
+                              <strong>{purchase.reference || formatPayableKind(purchase.kind)}</strong>
+                              <p className="q-table-muted">
+                                {formatPayableKind(purchase.kind)} · {formatDateFromIsoString(purchase.date)}
+                              </p>
+                            </div>
+                            <span className={`q-chip ${payableStatusChipClass(purchase.status)}`}>
+                              {formatPayableStatus(purchase.status)}
+                            </span>
+                          </div>
+                          <div className="q-payable-purchase-stats">
+                            <span>
+                              Vence:{' '}
+                              <strong className={isOverdue ? 'q-error-text' : ''}>
+                                {purchase.dueDate ? formatDateFromIsoString(purchase.dueDate) : '—'}
+                              </strong>
+                            </span>
+                            <span>Total: <strong className="q-mono">{formatMoney(asDecimal(purchase.total))}</strong></span>
+                            <span>Pagado: <strong className="q-mono">{formatMoney(asDecimal(purchase.paidAmount))}</strong></span>
+                            <span>Saldo: <strong className="q-mono">{formatMoney(saldo)}</strong></span>
+                          </div>
+                          <div className="q-table-actions">
+                            <button
+                              type="button"
+                              className="q-link-btn"
+                              onClick={() => {
+                                setActivePayPurchaseId((prev) => (prev === purchase.id ? '' : purchase.id))
+                                if (!purchasePaymentsByPurchase[purchase.id]) {
+                                  loadPurchasePayments(purchase.id).catch(() => {})
+                                }
+                              }}
+                            >
+                              Abonar
+                            </button>
+                            <button
+                              type="button"
+                              className="q-link-btn"
+                              onClick={() => loadPurchasePayments(purchase.id)}
+                            >
+                              Historial
+                            </button>
+                          </div>
+
+                          {activePayPurchaseId === purchase.id ? (
+                            <div className="q-payable-payment-form">
+                              <input
+                                type="date"
+                                value={draft.date}
+                                onChange={(event) =>
+                                  setPayablePaymentDraftByPurchase((prev) => ({
+                                    ...prev,
+                                    [purchase.id]: { ...draft, date: event.target.value },
+                                  }))
+                                }
+                              />
+                              <input
+                                type="number"
+                                min={0}
+                                step="0.01"
+                                value={draft.amount}
+                                onChange={(event) =>
+                                  setPayablePaymentDraftByPurchase((prev) => ({
+                                    ...prev,
+                                    [purchase.id]: { ...draft, amount: asNumber(event.target.value) },
+                                  }))
+                                }
+                              />
+                              <select
+                                value={draft.method}
+                                onChange={(event) =>
+                                  setPayablePaymentDraftByPurchase((prev) => ({
+                                    ...prev,
+                                    [purchase.id]: {
+                                      ...draft,
+                                      method: event.target.value as PayablePaymentDraft['method'],
+                                    },
+                                  }))
+                                }
+                              >
+                                <option value="EFECTIVO">EFECTIVO</option>
+                                <option value="TARJETA">TARJETA</option>
+                                <option value="TRANSFERENCIA">TRANSFERENCIA</option>
+                                <option value="APP">APP</option>
+                                <option value="OTRO">OTRO</option>
+                              </select>
+                              {purchase.kind === 'LOAN' ? (
+                                <select
+                                  value={draft.categoryId}
+                                  onChange={(event) =>
+                                    setPayablePaymentDraftByPurchase((prev) => ({
+                                      ...prev,
+                                      [purchase.id]: { ...draft, categoryId: event.target.value },
+                                    }))
+                                  }
+                                >
+                                  <option value="">Selecciona categoría</option>
+                                  {expenseCategories.map((category) => (
+                                    <option key={category.id} value={category.id}>
+                                      {category.name}
+                                    </option>
+                                  ))}
+                                </select>
+                              ) : null}
+                              <button className="q-btn q-btn-inline" type="button" onClick={() => handlePayPurchase(purchase)}>
+                                Confirmar abono
+                              </button>
+                            </div>
+                          ) : null}
+
+                          {loadingPaymentsByPurchase[purchase.id] ? <p>Cargando pagos...</p> : null}
+                          {payments.length ? (
+                            <div className="q-payable-history-list">
+                              {payments.map((payment) => (
+                                <div key={payment.id} className="q-payable-history-row">
+                                  <span>{formatDateFromIsoString(payment.date)}</span>
+                                  <strong className="q-mono">{formatMoney(asDecimal(payment.amount))}</strong>
+                                  <span>{payment.method}</span>
+                                </div>
+                              ))}
+                            </div>
+                          ) : null}
+                        </article>
+                      )
+                    })}
+                  </div>
+                ) : null}
+              </article>
+            )
+          })}
+        </div>
+      ) : null}
+    </section>
+  )
+
   const renderExpenses = () => (
     <section className="q-shift-closings">
       <header className="q-section-header">
@@ -3909,6 +4455,7 @@ export function AppShellPage() {
 
           {!loadingUser && activeItem === 'Cierres de turno' ? renderShiftClosings() : null}
           {!loadingUser && activeItem === 'Requisiciones' ? renderRequisitions() : null}
+          {!loadingUser && activeItem === 'Proveedores y adeudos' ? renderPayables() : null}
           {!loadingUser && activeItem === 'Gastos' ? renderExpenses() : null}
           {!loadingUser && activeItem === 'Sobres' ? renderEnvelopes() : null}
           {!loadingUser && activeItem === 'P&L y reportes' ? renderPnl() : null}
@@ -3919,6 +4466,7 @@ export function AppShellPage() {
           activeItem !== 'Dashboard' &&
           activeItem !== 'Cierres de turno' &&
           activeItem !== 'Requisiciones' &&
+          activeItem !== 'Proveedores y adeudos' &&
           activeItem !== 'Gastos' &&
           activeItem !== 'Sobres' &&
           activeItem !== 'P&L y reportes' &&
