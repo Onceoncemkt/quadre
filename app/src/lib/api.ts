@@ -510,6 +510,31 @@ export async function deleteExpense({ token, expenseId }: { token: string; expen
   })
 }
 
+
+export type EnvelopeItem = {
+  id: string
+  businessId: string
+  name: string
+  targetAmount: string
+  frequency: 'MONTHLY' | 'ONE_TIME'
+  dueDay: number | null
+  dueDate: string | null
+  categoryId: string | null
+  lastPaidAt: string | null
+  active: boolean
+  createdAt: string
+  saved: number
+  nextDue: string
+  daysLeft: number
+  remaining: number
+  dailyNeeded: number
+}
+
+export type EnvelopesSummary = {
+  items: EnvelopeItem[]
+  totalDailyNeeded: number
+  availableCashToday: number
+}
 export async function getLocationPnl({
   token,
   locationId,
@@ -521,6 +546,90 @@ export async function getLocationPnl({
 }) {
   return request<PnlSummary>(`/locations/${locationId}/pnl?month=${encodeURIComponent(month)}`, {
     method: 'GET',
+    token,
+  })
+}
+
+export async function createEnvelope({
+  token,
+  businessId,
+  payload,
+}: {
+  token: string
+  businessId: string
+  payload: {
+    name: string
+    targetAmount: number
+    frequency: 'MONTHLY' | 'ONE_TIME'
+    dueDay?: number
+    dueDate?: string
+    categoryId?: string
+  }
+}) {
+  return request<{ envelope: EnvelopeItem }>(`/businesses/${businessId}/envelopes`, {
+    method: 'POST',
+    token,
+    body: payload,
+  })
+}
+
+export async function getBusinessEnvelopes({
+  token,
+  businessId,
+}: {
+  token: string
+  businessId: string
+}) {
+  return request<EnvelopesSummary>(`/businesses/${businessId}/envelopes`, {
+    method: 'GET',
+    token,
+  })
+}
+
+export async function createEnvelopeDeposit({
+  token,
+  envelopeId,
+  payload,
+}: {
+  token: string
+  envelopeId: string
+  payload: {
+    date?: string
+    amount: number
+    note?: string
+  }
+}) {
+  return request<{ deposit: { id: string } }>(`/envelopes/${envelopeId}/deposits`, {
+    method: 'POST',
+    token,
+    body: payload,
+  })
+}
+
+export async function payEnvelope({
+  token,
+  envelopeId,
+  payload,
+}: {
+  token: string
+  envelopeId: string
+  payload: {
+    locationId: string
+    date?: string
+    amount?: number
+    method: 'EFECTIVO' | 'TARJETA' | 'TRANSFERENCIA' | 'APP' | 'OTRO'
+  }
+}) {
+  return request<{ envelope: EnvelopeItem }>(`/envelopes/${envelopeId}/pay`, {
+    method: 'POST',
+    token,
+    body: payload,
+  })
+}
+
+export async function deleteEnvelope({ token, envelopeId }: { token: string; envelopeId: string }) {
+  return request<{ deleted: boolean; deactivated: boolean }>(`/envelopes/${envelopeId}`, {
+    method: 'DELETE',
     token,
   })
 }

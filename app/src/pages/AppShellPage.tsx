@@ -6,12 +6,16 @@ import {
   createBusinessCounterparty,
   createBusinessItem,
   createBusinessMember,
+  createEnvelope,
+  createEnvelopeDeposit,
   createExpense,
   createRequisition,
   createShiftClosing,
+  deleteEnvelope,
   deleteExpense,
   deleteBusinessCounterparty,
   deleteBusinessItem,
+  getBusinessEnvelopes,
   getExpenseCategories,
   getBusinessCounterparties,
   getBusinessItems,
@@ -20,6 +24,7 @@ import {
   getLocationExpenses,
   getLocationPnl,
   getLocationRequisitions,
+  payEnvelope,
   patchBusinessCounterparty,
   patchBusinessItem,
   receiveRequisition,
@@ -29,8 +34,10 @@ import {
   type BusinessItem,
   type Counterparty,
   type DashboardSummary,
+  type EnvelopeItem,
   type ExpenseCategory,
   type ExpenseItem,
+  type EnvelopesSummary,
   type PnlSummary,
   type RequisitionItem,
   type RequisitionStatus,
@@ -46,7 +53,7 @@ const navGroups = [
   },
   {
     title: 'Dinero',
-    items: ['Proveedores y adeudos', 'Nómina', 'Gastos', 'P&L y reportes'],
+    items: ['Proveedores y adeudos', 'Nómina', 'Gastos', 'Sobres', 'P&L y reportes'],
   },
 ]
 const configGroup = {
@@ -130,6 +137,27 @@ type ExpenseDraft = {
   method: 'EFECTIVO' | 'TARJETA' | 'TRANSFERENCIA' | 'OTRO'
   counterpartyId: string
   paidFromCash: boolean
+}
+
+type EnvelopeDraft = {
+  name: string
+  targetAmount: number
+  frequency: 'MONTHLY' | 'ONE_TIME'
+  dueDay: number
+  dueDate: string
+  categoryId: string
+}
+
+type EnvelopeDepositDraft = {
+  amount: number
+  note: string
+}
+
+type EnvelopePayDraft = {
+  locationId: string
+  date: string
+  amount: number
+  method: 'EFECTIVO' | 'TARJETA' | 'TRANSFERENCIA' | 'APP' | 'OTRO'
 }
 
 const requisitionFilterOptions: Array<{ key: RequisitionsFilter; label: string }> = [
@@ -345,6 +373,24 @@ export function AppShellPage() {
   const [pnlSummary, setPnlSummary] = useState<PnlSummary | null>(null)
   const [loadingPnl, setLoadingPnl] = useState(false)
   const [pnlError, setPnlError] = useState('')
+  const [envelopesSummary, setEnvelopesSummary] = useState<EnvelopesSummary | null>(null)
+  const [loadingEnvelopes, setLoadingEnvelopes] = useState(false)
+  const [envelopesError, setEnvelopesError] = useState('')
+  const [envelopesSuccess, setEnvelopesSuccess] = useState('')
+  const [savingEnvelope, setSavingEnvelope] = useState(false)
+  const [showEnvelopeForm, setShowEnvelopeForm] = useState(false)
+  const [activeDepositEnvelopeId, setActiveDepositEnvelopeId] = useState('')
+  const [activePayEnvelopeId, setActivePayEnvelopeId] = useState('')
+  const [envelopeDraft, setEnvelopeDraft] = useState<EnvelopeDraft>({
+    name: '',
+    targetAmount: 0,
+    frequency: 'MONTHLY',
+    dueDay: 10,
+    dueDate: getTodayDateInput(),
+    categoryId: '',
+  })
+  const [depositDraftByEnvelope, setDepositDraftByEnvelope] = useState<Record<string, EnvelopeDepositDraft>>({})
+  const [payDraftByEnvelope, setPayDraftByEnvelope] = useState<Record<string, EnvelopePayDraft>>({})
   const [gastosMonth, setGastosMonth] = useState(getCurrentMonthInput())
   const [pnlMonth, setPnlMonth] = useState(getCurrentMonthInput())
   const [expensesCategoryFilter, setExpensesCategoryFilter] = useState('')
@@ -459,6 +505,10 @@ export function AppShellPage() {
   const canRegisterExpense = canReceiveRequisition
   const canDeleteManualExpense =
     selectedBusinessMembership?.role === 'OWNER' || selectedBusinessMembership?.role === 'ADMIN'
+  const canCreateEnvelope =
+    selectedBusinessMembership?.role === 'OWNER' || selectedBusinessMembership?.role === 'ADMIN'
+  const canDepositEnvelope = canReceiveRequisition
+  const canPayEnvelope = canCreateEnvelope
 
   useEffect(() => {
     if (selectedBusiness?.locations?.length) {
@@ -577,6 +627,29 @@ export function AppShellPage() {
       .finally(() => setLoadingPnl(false))
   }, [activeItem, pnlMonth, selectedLocationId, token])
   useEffect(() => {
+    if (activeItem !== 'Sobres' || !token || !selectedBusinessId) return
+    setLoadingEnvelopes(true)
+    setEnvelopesError('')
+    Promise.all([
+      getBusinessEnvelopes({ token, businessId: selectedBusinessId }),
+      getExpenseCategories({ token, businessId: selectedBusinessId }),
+    ])
+      .then(([summaryResponse, categoriesResponse]) => {
+        setEnvelopesSummary(summaryResponse)
+        const categories = categoriesResponse.items || []
+        setExpenseCategories(categories)
+        setEnvelopeDraft((prev) => ({
+          ...prev,
+          categoryId: prev.categoryId || categories[0]?.id || '',
+        }))
+      })
+      .catch((error) => {
+        setEnvelopesSummary(null)
+        setEnvelopesError(error instanceof Error ? error.message : 'No se pudieron cargar los sobres')
+      })
+      .finally(() => setLoadingEnvelopes(false))
+  }, [activeItem, selectedBusinessId, token])
+  useEffect(() => {
     if (activeItem !== 'Equipo' || !token || !selectedBusinessId || !canManageTeam) return
     setLoadingTeam(true)
     setTeamError('')
@@ -684,6 +757,19 @@ export function AppShellPage() {
   const pnlOperativeBreakdown = useMemo(
     () => (pnlSummary?.desgloseCategorias || []).filter((item) => item.kind === 'OPERATIVO'),
     [pnlSummary],
+  )
+  const envelopeItems = useMemo(() => envelopesSummary?.items || [], [envelopesSummary])
+  const envelopesDailyTarget = useMemo(
+    () => Number((envelopesSummary?.totalDailyNeeded || 0).toFixed(2)),
+    [envelopesSummary],
+  )
+  const envelopesAvailableCash = useMemo(
+    () => Number((envelopesSummary?.availableCashToday || 0).toFixed(2)),
+    [envelopesSummary],
+  )
+  const envelopesCashGap = useMemo(
+    () => Number(Math.max(envelopesDailyTarget - envelopesAvailableCash, 0).toFixed(2)),
+    [envelopesAvailableCash, envelopesDailyTarget],
   )
   const pnlIsEmpty = useMemo(() => {
     if (!pnlSummary) return true
@@ -796,6 +882,12 @@ export function AppShellPage() {
     setExpenses(response.items || [])
   }
 
+  async function refreshEnvelopesData() {
+    if (!token || !selectedBusinessId) return
+    const response = await getBusinessEnvelopes({ token, businessId: selectedBusinessId })
+    setEnvelopesSummary(response)
+  }
+
   function resetExpenseDraft() {
     setExpenseDraft({
       date: getTodayDateInput(),
@@ -858,6 +950,130 @@ export function AppShellPage() {
       setExpensesError(error instanceof Error ? error.message : 'No se pudo eliminar el gasto')
     } finally {
       setRowActionLoadingId('')
+    }
+  }
+
+  function resetEnvelopeDraft() {
+    setEnvelopeDraft({
+      name: '',
+      targetAmount: 0,
+      frequency: 'MONTHLY',
+      dueDay: 10,
+      dueDate: getTodayDateInput(),
+      categoryId: expenseCategories[0]?.id || '',
+    })
+  }
+
+  async function handleCreateEnvelope(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!token || !selectedBusinessId) return
+    if (!envelopeDraft.name.trim() || envelopeDraft.targetAmount <= 0) {
+      setEnvelopesError('Nombre y monto objetivo son obligatorios')
+      return
+    }
+    setSavingEnvelope(true)
+    setEnvelopesError('')
+    setEnvelopesSuccess('')
+    try {
+      await createEnvelope({
+        token,
+        businessId: selectedBusinessId,
+        payload: {
+          name: envelopeDraft.name.trim(),
+          targetAmount: envelopeDraft.targetAmount,
+          frequency: envelopeDraft.frequency,
+          ...(envelopeDraft.frequency === 'MONTHLY' ? { dueDay: envelopeDraft.dueDay } : {}),
+          ...(envelopeDraft.frequency === 'ONE_TIME' ? { dueDate: envelopeDraft.dueDate } : {}),
+          categoryId: envelopeDraft.categoryId || undefined,
+        },
+      })
+      await refreshEnvelopesData()
+      setEnvelopesSuccess('Sobre creado ✓')
+      setShowEnvelopeForm(false)
+      resetEnvelopeDraft()
+    } catch (error) {
+      setEnvelopesError(error instanceof Error ? error.message : 'No se pudo crear el sobre')
+    } finally {
+      setSavingEnvelope(false)
+    }
+  }
+
+  async function handleDepositEnvelope(envelopeId: string) {
+    if (!token) return
+    const draft = depositDraftByEnvelope[envelopeId]
+    if (!draft || draft.amount <= 0) {
+      setEnvelopesError('Captura un monto válido para abonar')
+      return
+    }
+    setSavingEnvelope(true)
+    setEnvelopesError('')
+    setEnvelopesSuccess('')
+    try {
+      await createEnvelopeDeposit({
+        token,
+        envelopeId,
+        payload: {
+          amount: draft.amount,
+          note: draft.note.trim() || undefined,
+        },
+      })
+      await refreshEnvelopesData()
+      setEnvelopesSuccess('Abono registrado ✓')
+      setDepositDraftByEnvelope((prev) => ({ ...prev, [envelopeId]: { amount: 0, note: '' } }))
+      setActiveDepositEnvelopeId('')
+    } catch (error) {
+      setEnvelopesError(error instanceof Error ? error.message : 'No se pudo registrar el abono')
+    } finally {
+      setSavingEnvelope(false)
+    }
+  }
+
+  async function handlePayEnvelope(envelope: EnvelopeItem) {
+    if (!token || !selectedLocationId) return
+    const draft = payDraftByEnvelope[envelope.id] || {
+      locationId: selectedLocationId,
+      date: getTodayDateInput(),
+      amount: asDecimal(envelope.targetAmount),
+      method: 'TRANSFERENCIA',
+    }
+    setSavingEnvelope(true)
+    setEnvelopesError('')
+    setEnvelopesSuccess('')
+    try {
+      await payEnvelope({
+        token,
+        envelopeId: envelope.id,
+        payload: {
+          locationId: draft.locationId,
+          date: draft.date,
+          amount: draft.amount,
+          method: draft.method,
+        },
+      })
+      await refreshEnvelopesData()
+      setEnvelopesSuccess('Gasto registrado y sobre reiniciado ✓')
+      setActivePayEnvelopeId('')
+    } catch (error) {
+      setEnvelopesError(error instanceof Error ? error.message : 'No se pudo pagar el sobre')
+    } finally {
+      setSavingEnvelope(false)
+    }
+  }
+
+  async function handleDeleteEnvelope(envelopeId: string, name: string) {
+    if (!token) return
+    if (!window.confirm(`¿Eliminar sobre "${name}"?`)) return
+    setSavingEnvelope(true)
+    setEnvelopesError('')
+    setEnvelopesSuccess('')
+    try {
+      await deleteEnvelope({ token, envelopeId })
+      await refreshEnvelopesData()
+      setEnvelopesSuccess('Sobre eliminado/desactivado ✓')
+    } catch (error) {
+      setEnvelopesError(error instanceof Error ? error.message : 'No se pudo eliminar el sobre')
+    } finally {
+      setSavingEnvelope(false)
     }
   }
 
@@ -2800,6 +3016,294 @@ export function AppShellPage() {
       ) : null}
     </section>
   )
+  const renderEnvelopes = () => (
+    <section className="q-shift-closings">
+      <header className="q-section-header">
+        <div>
+          <h1>Sobres</h1>
+          <p>Apartados digitales para obligaciones futuras.</p>
+        </div>
+        {canCreateEnvelope ? (
+          <button
+            className="q-btn q-btn-inline"
+            type="button"
+            onClick={() => {
+              resetEnvelopeDraft()
+              setShowEnvelopeForm((prev) => !prev)
+            }}
+          >
+            {showEnvelopeForm ? 'Cerrar formulario' : 'Nuevo sobre'}
+          </button>
+        ) : null}
+      </header>
+
+      <article className="q-card q-envelope-strip">
+        <div>
+          <strong className="q-mono">Apartar hoy: {formatMoney(envelopesDailyTarget)}</strong>
+          <span className="q-table-muted q-envelope-strip-sub">
+            Efectivo disponible hoy: <strong className="q-mono">{formatMoney(envelopesAvailableCash)}</strong>
+          </span>
+        </div>
+        {envelopesAvailableCash >= envelopesDailyTarget ? (
+          <span className="q-chip ok">Te alcanza para apartar ✓</span>
+        ) : (
+          <span className="q-chip falt">Hoy no alcanza — faltan {formatMoney(envelopesCashGap)}</span>
+        )}
+      </article>
+
+      {envelopesSuccess ? <p className="q-success-text">{envelopesSuccess}</p> : null}
+      {envelopesError ? <p className="q-error-text">{envelopesError}</p> : null}
+
+      {showEnvelopeForm ? (
+        <form className="q-card q-envelope-form" onSubmit={handleCreateEnvelope}>
+          <div className="q-field-grid-3">
+            <label className="q-field">
+              Nombre
+              <input
+                type="text"
+                value={envelopeDraft.name}
+                onChange={(event) => setEnvelopeDraft((prev) => ({ ...prev, name: event.target.value }))}
+                required
+              />
+            </label>
+            <label className="q-field">
+              Monto objetivo
+              <input
+                type="number"
+                min={0}
+                step="0.01"
+                value={envelopeDraft.targetAmount}
+                onChange={(event) =>
+                  setEnvelopeDraft((prev) => ({ ...prev, targetAmount: asNumber(event.target.value) }))
+                }
+                required
+              />
+            </label>
+            <label className="q-field">
+              Frecuencia
+              <select
+                value={envelopeDraft.frequency}
+                onChange={(event) =>
+                  setEnvelopeDraft((prev) => ({
+                    ...prev,
+                    frequency: event.target.value as EnvelopeDraft['frequency'],
+                  }))
+                }
+              >
+                <option value="MONTHLY">Mensual</option>
+                <option value="ONE_TIME">Única</option>
+              </select>
+            </label>
+          </div>
+          <div className="q-field-grid-3">
+            {envelopeDraft.frequency === 'MONTHLY' ? (
+              <label className="q-field">
+                Día del mes
+                <input
+                  type="number"
+                  min={1}
+                  max={31}
+                  value={envelopeDraft.dueDay}
+                  onChange={(event) =>
+                    setEnvelopeDraft((prev) => ({ ...prev, dueDay: Math.max(1, asNumber(event.target.value)) }))
+                  }
+                />
+              </label>
+            ) : (
+              <label className="q-field">
+                Fecha
+                <input
+                  type="date"
+                  value={envelopeDraft.dueDate}
+                  onChange={(event) => setEnvelopeDraft((prev) => ({ ...prev, dueDate: event.target.value }))}
+                />
+              </label>
+            )}
+            <label className="q-field">
+              Categoría
+              <select
+                value={envelopeDraft.categoryId}
+                onChange={(event) => setEnvelopeDraft((prev) => ({ ...prev, categoryId: event.target.value }))}
+              >
+                <option value="">Sin categoría</option>
+                {expenseCategories.map((category) => (
+                  <option key={category.id} value={category.id}>
+                    {category.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <button className="q-btn q-btn-inline" type="submit" disabled={savingEnvelope}>
+            {savingEnvelope ? 'Guardando...' : 'Guardar sobre'}
+          </button>
+        </form>
+      ) : null}
+
+      {loadingEnvelopes ? <p>Cargando sobres...</p> : null}
+
+      {!loadingEnvelopes && !envelopeItems.length ? (
+        <section className="q-card q-empty-state">
+          <h3>Digitaliza tus sobres</h3>
+          <p>
+            Digitaliza tus sobres — Quadre te dice cuánto apartar cada día para que la renta nunca te agarre en
+            cero.
+          </p>
+        </section>
+      ) : null}
+
+      {!loadingEnvelopes && envelopeItems.length ? (
+        <div className="q-envelope-grid">
+          {envelopeItems.map((envelope) => {
+            const target = asDecimal(envelope.targetAmount)
+            const progress = target > 0 ? Math.min((envelope.saved / target) * 100, 100) : 0
+            const depositDraft = depositDraftByEnvelope[envelope.id] || { amount: 0, note: '' }
+            const payDraft = payDraftByEnvelope[envelope.id] || {
+              locationId: selectedLocationId,
+              date: getTodayDateInput(),
+              amount: asDecimal(envelope.targetAmount),
+              method: 'TRANSFERENCIA',
+            }
+            return (
+              <article className="q-card q-envelope-card" key={envelope.id}>
+                <h3>{envelope.name}</h3>
+                <div className="q-envelope-progress">
+                  <div className="q-envelope-progress-bar" style={{ width: `${progress}%` }} />
+                </div>
+                <p className="q-envelope-meta q-mono">
+                  {formatMoney(envelope.saved)} de {formatMoney(target)}
+                </p>
+                <p className="q-table-muted">
+                  vence {formatDateFromIsoString(envelope.nextDue)} · faltan {envelope.daysLeft} días
+                </p>
+                <p className="q-envelope-daily">
+                  Aparta <strong className="q-mono">{formatMoney(envelope.dailyNeeded)}/día</strong>
+                </p>
+
+                <div className="q-table-actions">
+                  {canDepositEnvelope ? (
+                    <button
+                      type="button"
+                      className="q-link-btn"
+                      onClick={() =>
+                        setActiveDepositEnvelopeId((prev) => (prev === envelope.id ? '' : envelope.id))
+                      }
+                    >
+                      Abonar
+                    </button>
+                  ) : null}
+                  {canPayEnvelope ? (
+                    <button
+                      type="button"
+                      className="q-link-btn"
+                      onClick={() => setActivePayEnvelopeId((prev) => (prev === envelope.id ? '' : envelope.id))}
+                    >
+                      Pagar
+                    </button>
+                  ) : null}
+                  {canCreateEnvelope ? (
+                    <button
+                      type="button"
+                      className="q-link-btn q-link-danger"
+                      disabled={savingEnvelope}
+                      onClick={() => handleDeleteEnvelope(envelope.id, envelope.name)}
+                    >
+                      Eliminar
+                    </button>
+                  ) : null}
+                </div>
+
+                {activeDepositEnvelopeId === envelope.id ? (
+                  <div className="q-envelope-mini-form">
+                    <input
+                      type="number"
+                      min={0}
+                      step="0.01"
+                      placeholder="Monto"
+                      value={depositDraft.amount}
+                      onChange={(event) =>
+                        setDepositDraftByEnvelope((prev) => ({
+                          ...prev,
+                          [envelope.id]: { ...depositDraft, amount: asNumber(event.target.value) },
+                        }))
+                      }
+                    />
+                    <input
+                      type="text"
+                      placeholder="Nota (opcional)"
+                      value={depositDraft.note}
+                      onChange={(event) =>
+                        setDepositDraftByEnvelope((prev) => ({
+                          ...prev,
+                          [envelope.id]: { ...depositDraft, note: event.target.value },
+                        }))
+                      }
+                    />
+                    <button className="q-btn q-btn-inline" type="button" onClick={() => handleDepositEnvelope(envelope.id)}>
+                      Guardar abono
+                    </button>
+                  </div>
+                ) : null}
+
+                {activePayEnvelopeId === envelope.id ? (
+                  <div className="q-envelope-mini-form">
+                    <select
+                      value={payDraft.locationId}
+                      onChange={(event) =>
+                        setPayDraftByEnvelope((prev) => ({
+                          ...prev,
+                          [envelope.id]: { ...payDraft, locationId: event.target.value },
+                        }))
+                      }
+                    >
+                      {(selectedBusiness?.locations || []).map((location) => (
+                        <option key={location.id} value={location.id}>
+                          {location.name}
+                        </option>
+                      ))}
+                    </select>
+                    <select
+                      value={payDraft.method}
+                      onChange={(event) =>
+                        setPayDraftByEnvelope((prev) => ({
+                          ...prev,
+                          [envelope.id]: {
+                            ...payDraft,
+                            method: event.target.value as EnvelopePayDraft['method'],
+                          },
+                        }))
+                      }
+                    >
+                      <option value="EFECTIVO">EFECTIVO</option>
+                      <option value="TARJETA">TARJETA</option>
+                      <option value="TRANSFERENCIA">TRANSFERENCIA</option>
+                      <option value="APP">APP</option>
+                      <option value="OTRO">OTRO</option>
+                    </select>
+                    <input
+                      type="number"
+                      min={0}
+                      step="0.01"
+                      value={payDraft.amount}
+                      onChange={(event) =>
+                        setPayDraftByEnvelope((prev) => ({
+                          ...prev,
+                          [envelope.id]: { ...payDraft, amount: asNumber(event.target.value) },
+                        }))
+                      }
+                    />
+                    <button className="q-btn q-btn-inline" type="button" onClick={() => handlePayEnvelope(envelope)}>
+                      Confirmar pago
+                    </button>
+                  </div>
+                ) : null}
+              </article>
+            )
+          })}
+        </div>
+      ) : null}
+    </section>
+  )
   const renderTeam = () => (
     <section className="q-shift-closings">
       <header className="q-section-header">
@@ -3118,6 +3622,7 @@ export function AppShellPage() {
           {!loadingUser && activeItem === 'Cierres de turno' ? renderShiftClosings() : null}
           {!loadingUser && activeItem === 'Requisiciones' ? renderRequisitions() : null}
           {!loadingUser && activeItem === 'Gastos' ? renderExpenses() : null}
+          {!loadingUser && activeItem === 'Sobres' ? renderEnvelopes() : null}
           {!loadingUser && activeItem === 'P&L y reportes' ? renderPnl() : null}
           {!loadingUser && activeItem === 'Equipo' ? renderTeam() : null}
           {!loadingUser && activeItem === 'Waitlist' ? renderWaitlist() : null}
@@ -3127,6 +3632,7 @@ export function AppShellPage() {
           activeItem !== 'Cierres de turno' &&
           activeItem !== 'Requisiciones' &&
           activeItem !== 'Gastos' &&
+          activeItem !== 'Sobres' &&
           activeItem !== 'P&L y reportes' &&
           activeItem !== 'Equipo' &&
           activeItem !== 'Waitlist' ? (
