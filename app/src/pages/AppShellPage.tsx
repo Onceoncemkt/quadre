@@ -6,14 +6,19 @@ import {
   createBusinessCounterparty,
   createBusinessItem,
   createBusinessMember,
+  createExpense,
   createRequisition,
   createShiftClosing,
+  deleteExpense,
   deleteBusinessCounterparty,
   deleteBusinessItem,
+  getExpenseCategories,
   getBusinessCounterparties,
   getBusinessItems,
   getDashboardSummary,
   getBusinessMembers,
+  getLocationExpenses,
+  getLocationPnl,
   getLocationRequisitions,
   patchBusinessCounterparty,
   patchBusinessItem,
@@ -24,6 +29,9 @@ import {
   type BusinessItem,
   type Counterparty,
   type DashboardSummary,
+  type ExpenseCategory,
+  type ExpenseItem,
+  type PnlSummary,
   type RequisitionItem,
   type RequisitionStatus,
   type ShiftClosingItem,
@@ -114,6 +122,16 @@ type QuickItemDraft = {
   lastPrice: number
 }
 
+type ExpenseDraft = {
+  date: string
+  categoryId: string
+  concept: string
+  amount: number
+  method: 'EFECTIVO' | 'TARJETA' | 'TRANSFERENCIA' | 'OTRO'
+  counterpartyId: string
+  paidFromCash: boolean
+}
+
 const requisitionFilterOptions: Array<{ key: RequisitionsFilter; label: string }> = [
   { key: 'ACTIVE', label: 'Activas' },
   { key: 'RECEIVED', label: 'Recibidas' },
@@ -162,6 +180,38 @@ function toDateInput(date: Date) {
   const month = String(date.getMonth() + 1).padStart(2, '0')
   const day = String(date.getDate()).padStart(2, '0')
   return `${year}-${month}-${day}`
+}
+
+function getCurrentMonthInput() {
+  return getTodayDateInput().slice(0, 7)
+}
+
+function shiftMonth(month: string, delta: number) {
+  const [yearString, monthString] = month.split('-')
+  const year = Number(yearString)
+  const monthIndex = Number(monthString) - 1
+  const next = new Date(year, monthIndex + delta, 1)
+  return `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, '0')}`
+}
+
+function getMonthBounds(month: string) {
+  const [yearString, monthString] = month.split('-')
+  const year = Number(yearString)
+  const monthIndex = Number(monthString) - 1
+  const from = `${month}-01`
+  const lastDay = new Date(year, monthIndex + 1, 0).getDate()
+  const to = `${month}-${String(lastDay).padStart(2, '0')}`
+  return { from, to }
+}
+
+function formatMonthLabel(month: string) {
+  const [yearString, monthString] = month.split('-')
+  const date = new Date(Number(yearString), Number(monthString) - 1, 1)
+  const label = new Intl.DateTimeFormat('es-MX', {
+    month: 'long',
+    year: 'numeric',
+  }).format(date)
+  return label.charAt(0).toUpperCase() + label.slice(1)
 }
 
 function asNumber(value: string) {
@@ -287,6 +337,28 @@ export function AppShellPage() {
   const [dashboardSummary, setDashboardSummary] = useState<DashboardSummary | null>(null)
   const [loadingDashboard, setLoadingDashboard] = useState(false)
   const [dashboardError, setDashboardError] = useState('')
+  const [expenseCategories, setExpenseCategories] = useState<ExpenseCategory[]>([])
+  const [expenses, setExpenses] = useState<ExpenseItem[]>([])
+  const [loadingExpenses, setLoadingExpenses] = useState(false)
+  const [expensesError, setExpensesError] = useState('')
+  const [expensesSuccess, setExpensesSuccess] = useState('')
+  const [pnlSummary, setPnlSummary] = useState<PnlSummary | null>(null)
+  const [loadingPnl, setLoadingPnl] = useState(false)
+  const [pnlError, setPnlError] = useState('')
+  const [gastosMonth, setGastosMonth] = useState(getCurrentMonthInput())
+  const [pnlMonth, setPnlMonth] = useState(getCurrentMonthInput())
+  const [expensesCategoryFilter, setExpensesCategoryFilter] = useState('')
+  const [showExpenseForm, setShowExpenseForm] = useState(false)
+  const [savingExpense, setSavingExpense] = useState(false)
+  const [expenseDraft, setExpenseDraft] = useState<ExpenseDraft>({
+    date: getTodayDateInput(),
+    categoryId: '',
+    concept: '',
+    amount: 0,
+    method: 'EFECTIVO',
+    counterpartyId: '',
+    paidFromCash: false,
+  })
   const [requisitions, setRequisitions] = useState<RequisitionItem[]>([])
   const [loadingRequisitions, setLoadingRequisitions] = useState(false)
   const [requisitionsError, setRequisitionsError] = useState('')
@@ -384,6 +456,9 @@ export function AppShellPage() {
     selectedBusinessMembership?.role === 'ADMIN' ||
     selectedBusinessMembership?.role === 'MANAGER'
   const canCreateRequisition = canReceiveRequisition
+  const canRegisterExpense = canReceiveRequisition
+  const canDeleteManualExpense =
+    selectedBusinessMembership?.role === 'OWNER' || selectedBusinessMembership?.role === 'ADMIN'
 
   useEffect(() => {
     if (selectedBusiness?.locations?.length) {
@@ -443,6 +518,64 @@ export function AppShellPage() {
       })
       .finally(() => setLoadingDashboard(false))
   }, [selectedLocationId, token])
+
+  useEffect(() => {
+    if (activeItem !== 'Gastos' || !token || !selectedBusinessId) return
+    Promise.all([
+      getExpenseCategories({ token, businessId: selectedBusinessId }),
+      getBusinessCounterparties({ token, businessId: selectedBusinessId }),
+    ])
+      .then(([categoriesResponse, counterpartiesResponse]) => {
+        const nextCategories = categoriesResponse.items || []
+        setExpenseCategories(nextCategories)
+        setCounterparties(counterpartiesResponse.counterparties || [])
+        setExpenseDraft((prev) => ({
+          ...prev,
+          categoryId: prev.categoryId || nextCategories[0]?.id || '',
+        }))
+      })
+      .catch((error) => {
+        setExpenseCategories([])
+        setExpensesError(error instanceof Error ? error.message : 'No se pudieron cargar categorías de gasto')
+      })
+  }, [activeItem, selectedBusinessId, token])
+
+  useEffect(() => {
+    if (activeItem !== 'Gastos' || !token || !selectedLocationId) return
+    const { from, to } = getMonthBounds(gastosMonth)
+    setLoadingExpenses(true)
+    setExpensesError('')
+    getLocationExpenses({
+      token,
+      locationId: selectedLocationId,
+      from,
+      to,
+      categoryId: expensesCategoryFilter || undefined,
+    })
+      .then((response) => setExpenses(response.items || []))
+      .catch((error) => {
+        setExpenses([])
+        setExpensesError(error instanceof Error ? error.message : 'No se pudieron cargar los gastos')
+      })
+      .finally(() => setLoadingExpenses(false))
+  }, [activeItem, expensesCategoryFilter, gastosMonth, selectedLocationId, token])
+
+  useEffect(() => {
+    if (activeItem !== 'P&L y reportes' || !token || !selectedLocationId) return
+    setLoadingPnl(true)
+    setPnlError('')
+    getLocationPnl({
+      token,
+      locationId: selectedLocationId,
+      month: pnlMonth,
+    })
+      .then((response) => setPnlSummary(response))
+      .catch((error) => {
+        setPnlSummary(null)
+        setPnlError(error instanceof Error ? error.message : 'No se pudo cargar el P&L')
+      })
+      .finally(() => setLoadingPnl(false))
+  }, [activeItem, pnlMonth, selectedLocationId, token])
   useEffect(() => {
     if (activeItem !== 'Equipo' || !token || !selectedBusinessId || !canManageTeam) return
     setLoadingTeam(true)
@@ -542,6 +675,25 @@ export function AppShellPage() {
     () => counterparties.filter((counterparty) => counterparty.active),
     [counterparties],
   )
+  const gastosMonthLabel = useMemo(() => formatMonthLabel(gastosMonth), [gastosMonth])
+  const pnlMonthLabel = useMemo(() => formatMonthLabel(pnlMonth), [pnlMonth])
+  const expensesMonthTotal = useMemo(
+    () => expenses.reduce((sum, item) => sum + asDecimal(item.amount), 0),
+    [expenses],
+  )
+  const pnlOperativeBreakdown = useMemo(
+    () => (pnlSummary?.desgloseCategorias || []).filter((item) => item.kind === 'OPERATIVO'),
+    [pnlSummary],
+  )
+  const pnlIsEmpty = useMemo(() => {
+    if (!pnlSummary) return true
+    return (
+      pnlSummary.ingresos === 0 &&
+      pnlSummary.costoVenta === 0 &&
+      pnlSummary.operativos === 0 &&
+      pnlSummary.financieros === 0
+    )
+  }, [pnlSummary])
 
   const closingTotals = useMemo(() => getTotals(closeDraft), [closeDraft])
   const requisitionEstimatedTotal = useMemo(
@@ -629,6 +781,84 @@ export function AppShellPage() {
     ])
     setBusinessItems(itemsResponse.items || [])
     setCounterparties(counterpartiesResponse.counterparties || [])
+  }
+
+  async function refreshExpensesData() {
+    if (!token || !selectedLocationId) return
+    const { from, to } = getMonthBounds(gastosMonth)
+    const response = await getLocationExpenses({
+      token,
+      locationId: selectedLocationId,
+      from,
+      to,
+      categoryId: expensesCategoryFilter || undefined,
+    })
+    setExpenses(response.items || [])
+  }
+
+  function resetExpenseDraft() {
+    setExpenseDraft({
+      date: getTodayDateInput(),
+      categoryId: expenseCategories[0]?.id || '',
+      concept: '',
+      amount: 0,
+      method: 'EFECTIVO',
+      counterpartyId: '',
+      paidFromCash: false,
+    })
+  }
+
+  async function handleCreateExpense(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!token || !selectedLocationId) return
+    if (!expenseDraft.categoryId || !expenseDraft.concept.trim()) {
+      setExpensesError('Categoría y concepto son obligatorios')
+      return
+    }
+    setSavingExpense(true)
+    setExpensesError('')
+    setExpensesSuccess('')
+    try {
+      await createExpense({
+        token,
+        locationId: selectedLocationId,
+        payload: {
+          date: expenseDraft.date,
+          categoryId: expenseDraft.categoryId,
+          concept: expenseDraft.concept.trim(),
+          amount: expenseDraft.amount,
+          method: expenseDraft.method,
+          counterpartyId: expenseDraft.counterpartyId || undefined,
+          paidFromCash: expenseDraft.paidFromCash,
+        },
+      })
+      await refreshExpensesData()
+      setExpensesSuccess('Gasto registrado ✓')
+      setShowExpenseForm(false)
+      resetExpenseDraft()
+    } catch (error) {
+      setExpensesError(error instanceof Error ? error.message : 'No se pudo registrar el gasto')
+    } finally {
+      setSavingExpense(false)
+    }
+  }
+
+  async function handleDeleteExpense(expense: ExpenseItem) {
+    if (!token) return
+    if (expense.source !== 'MANUAL') return
+    if (!window.confirm(`¿Eliminar gasto "${expense.concept}"?`)) return
+    setRowActionLoadingId(`expense-${expense.id}`)
+    setExpensesError('')
+    setExpensesSuccess('')
+    try {
+      await deleteExpense({ token, expenseId: expense.id })
+      await refreshExpensesData()
+      setExpensesSuccess('Gasto manual eliminado ✓')
+    } catch (error) {
+      setExpensesError(error instanceof Error ? error.message : 'No se pudo eliminar el gasto')
+    } finally {
+      setRowActionLoadingId('')
+    }
   }
 
   function resetNewRequisitionDraft() {
@@ -2280,6 +2510,296 @@ export function AppShellPage() {
       ) : null}
     </section>
   )
+  const renderExpenses = () => (
+    <section className="q-shift-closings">
+      <header className="q-section-header">
+        <div>
+          <h1>Gastos</h1>
+          <p>Control de egresos de {selectedLocationName || 'la sucursal seleccionada'}.</p>
+        </div>
+        <div className="q-actions-row">
+          <div className="q-month-nav">
+            <button type="button" className="q-chip-btn" onClick={() => setGastosMonth((prev) => shiftMonth(prev, -1))}>
+              ←
+            </button>
+            <strong>{gastosMonthLabel}</strong>
+            <button type="button" className="q-chip-btn" onClick={() => setGastosMonth((prev) => shiftMonth(prev, 1))}>
+              →
+            </button>
+          </div>
+          {canRegisterExpense ? (
+            <button
+              className="q-btn q-btn-inline"
+              type="button"
+              onClick={() => {
+                resetExpenseDraft()
+                setShowExpenseForm((prev) => !prev)
+              }}
+            >
+              {showExpenseForm ? 'Cerrar formulario' : 'Registrar gasto'}
+            </button>
+          ) : null}
+        </div>
+      </header>
+
+      <article className="q-card q-expenses-total-card">
+        <span>Total del mes</span>
+        <strong className="q-mono">{formatMoney(expensesMonthTotal)}</strong>
+      </article>
+
+      <div className="q-filter-row q-requisitions-filter-row">
+        <label className="q-expenses-filter">
+          Categoría
+          <select value={expensesCategoryFilter} onChange={(event) => setExpensesCategoryFilter(event.target.value)}>
+            <option value="">Todas</option>
+            {expenseCategories.map((category) => (
+              <option key={category.id} value={category.id}>
+                {category.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+
+      {expensesSuccess ? <p className="q-success-text">{expensesSuccess}</p> : null}
+      {expensesError ? <p className="q-error-text">{expensesError}</p> : null}
+
+      {showExpenseForm ? (
+        <form className="q-card q-expense-form" onSubmit={handleCreateExpense}>
+          <div className="q-field-grid-3">
+            <label className="q-field">
+              Fecha
+              <input
+                type="date"
+                value={expenseDraft.date}
+                onChange={(event) => setExpenseDraft((prev) => ({ ...prev, date: event.target.value }))}
+                required
+              />
+            </label>
+            <label className="q-field">
+              Categoría
+              <select
+                value={expenseDraft.categoryId}
+                onChange={(event) => setExpenseDraft((prev) => ({ ...prev, categoryId: event.target.value }))}
+                required
+              >
+                <option value="">Selecciona categoría</option>
+                {expenseCategories.map((category) => (
+                  <option key={category.id} value={category.id}>
+                    {category.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="q-field">
+              Método
+              <select
+                value={expenseDraft.method}
+                onChange={(event) =>
+                  setExpenseDraft((prev) => ({
+                    ...prev,
+                    method: event.target.value as ExpenseDraft['method'],
+                  }))
+                }
+              >
+                <option value="EFECTIVO">EFECTIVO</option>
+                <option value="TARJETA">TARJETA</option>
+                <option value="TRANSFERENCIA">TRANSFERENCIA</option>
+                <option value="OTRO">OTRO</option>
+              </select>
+            </label>
+          </div>
+          <div className="q-field-grid-3">
+            <label className="q-field">
+              Concepto
+              <input
+                type="text"
+                value={expenseDraft.concept}
+                onChange={(event) => setExpenseDraft((prev) => ({ ...prev, concept: event.target.value }))}
+                required
+              />
+            </label>
+            <label className="q-field">
+              Monto
+              <input
+                type="number"
+                min={0}
+                step="0.01"
+                value={expenseDraft.amount}
+                onChange={(event) => setExpenseDraft((prev) => ({ ...prev, amount: asNumber(event.target.value) }))}
+                required
+              />
+            </label>
+            <label className="q-field">
+              Proveedor (opcional)
+              <select
+                value={expenseDraft.counterpartyId}
+                onChange={(event) => setExpenseDraft((prev) => ({ ...prev, counterpartyId: event.target.value }))}
+              >
+                <option value="">Sin proveedor</option>
+                {activeCounterparties.map((counterparty) => (
+                  <option key={counterparty.id} value={counterparty.id}>
+                    {counterparty.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <label className="q-toggle-inline q-expense-check">
+            <input
+              type="checkbox"
+              checked={expenseDraft.paidFromCash}
+              onChange={(event) => setExpenseDraft((prev) => ({ ...prev, paidFromCash: event.target.checked }))}
+            />
+            Pagado de caja
+          </label>
+          <button className="q-btn q-btn-inline" type="submit" disabled={savingExpense}>
+            {savingExpense ? 'Guardando...' : 'Guardar gasto'}
+          </button>
+        </form>
+      ) : null}
+
+      {loadingExpenses ? <p>Cargando gastos...</p> : null}
+
+      {!loadingExpenses && !expenses.length ? (
+        <section className="q-card q-empty-state">
+          <h3>No hay gastos para este periodo</h3>
+          <p>Registra el primer gasto para empezar a ver el control mensual.</p>
+          {canRegisterExpense ? (
+            <button
+              className="q-btn q-btn-inline"
+              type="button"
+              onClick={() => {
+                resetExpenseDraft()
+                setShowExpenseForm(true)
+              }}
+            >
+              Registrar gasto
+            </button>
+          ) : null}
+        </section>
+      ) : null}
+
+      {!loadingExpenses && expenses.length ? (
+        <div className="q-table-wrap">
+          <table className="q-table">
+            <thead>
+              <tr>
+                <th>Fecha</th>
+                <th>Concepto</th>
+                <th>Método</th>
+                <th className="is-right">Monto</th>
+                <th>Acciones</th>
+              </tr>
+            </thead>
+            <tbody>
+              {expenses.map((expense) => (
+                <tr key={expense.id}>
+                  <td>{formatDateFromIsoString(expense.date).slice(0, 5)}</td>
+                  <td>
+                    <div className="q-table-turn">
+                      <strong>{expense.concept}</strong>
+                      <span>{expense.category?.name || 'Sin categoría'}</span>
+                    </div>
+                  </td>
+                  <td>
+                    <span>{expense.method}</span>
+                    {expense.source !== 'MANUAL' ? <span className="q-chip q-chip-auto">auto</span> : null}
+                  </td>
+                  <td className="is-right q-mono">{formatMoney(asDecimal(expense.amount))}</td>
+                  <td>
+                    {canDeleteManualExpense && expense.source === 'MANUAL' ? (
+                      <button
+                        type="button"
+                        className="q-link-btn q-link-danger"
+                        disabled={rowActionLoadingId === `expense-${expense.id}`}
+                        onClick={() => handleDeleteExpense(expense)}
+                      >
+                        Eliminar
+                      </button>
+                    ) : (
+                      <span className="q-table-muted">—</span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+    </section>
+  )
+
+  const renderPnl = () => (
+    <section className="q-shift-closings">
+      <header className="q-section-header">
+        <div>
+          <h1>P&L y reportes</h1>
+          <p>Estado de resultados de {selectedLocationName || 'la sucursal seleccionada'}.</p>
+        </div>
+        <div className="q-month-nav">
+          <button type="button" className="q-chip-btn" onClick={() => setPnlMonth((prev) => shiftMonth(prev, -1))}>
+            ←
+          </button>
+          <strong>{pnlMonthLabel}</strong>
+          <button type="button" className="q-chip-btn" onClick={() => setPnlMonth((prev) => shiftMonth(prev, 1))}>
+            →
+          </button>
+        </div>
+      </header>
+
+      {loadingPnl ? <p>Cargando P&L...</p> : null}
+      {pnlError ? <p className="q-error-text">{pnlError}</p> : null}
+
+      {!loadingPnl && pnlSummary && pnlIsEmpty ? (
+        <section className="q-card q-empty-state">
+          <h3>Este mes aún no tiene movimientos</h3>
+          <p>Cuando haya ingresos o gastos aparecerá aquí el estado de resultados.</p>
+        </section>
+      ) : null}
+
+      {!loadingPnl && pnlSummary && !pnlIsEmpty ? (
+        <article className="q-card q-pnl-ticket">
+          <div className="q-pnl-line">
+            <span>INGRESOS (netos)</span>
+            <strong className="q-mono">{formatMoney(pnlSummary.ingresos)}</strong>
+          </div>
+          <div className="q-pnl-divider" />
+          <div className="q-pnl-line">
+            <span>COSTO DE VENTA</span>
+            <strong className="q-mono">{formatMoney(pnlSummary.costoVenta)}</strong>
+          </div>
+          <div className="q-pnl-divider" />
+          <div className="q-pnl-line q-pnl-subtotal">
+            <span>UTILIDAD BRUTA</span>
+            <strong className="q-mono">{formatMoney(pnlSummary.utilidadBruta)}</strong>
+          </div>
+          <div className="q-pnl-divider" />
+          <div className="q-pnl-line">
+            <span>GASTOS OPERATIVOS</span>
+            <strong className="q-mono">{formatMoney(pnlSummary.operativos)}</strong>
+          </div>
+          {pnlOperativeBreakdown.map((item) => (
+            <div className="q-pnl-line q-pnl-line-indent" key={`op-${item.categoria}`}>
+              <span>{item.categoria}</span>
+              <strong className="q-mono">{formatMoney(item.total)}</strong>
+            </div>
+          ))}
+          <div className="q-pnl-divider" />
+          <div className="q-pnl-line">
+            <span>FINANCIEROS</span>
+            <strong className="q-mono">{formatMoney(pnlSummary.financieros)}</strong>
+          </div>
+          <div className="q-pnl-divider" />
+          <div className={`q-pnl-final ${pnlSummary.utilidadOperativa >= 0 ? 'ok' : 'falt'}`}>
+            <span>UTILIDAD OPERATIVA</span>
+            <strong className="q-mono">{formatMoney(pnlSummary.utilidadOperativa)}</strong>
+            <small className="q-mono">Margen: {(pnlSummary.margen * 100).toFixed(2)}%</small>
+          </div>
+        </article>
+      ) : null}
+    </section>
+  )
   const renderTeam = () => (
     <section className="q-shift-closings">
       <header className="q-section-header">
@@ -2597,6 +3117,8 @@ export function AppShellPage() {
 
           {!loadingUser && activeItem === 'Cierres de turno' ? renderShiftClosings() : null}
           {!loadingUser && activeItem === 'Requisiciones' ? renderRequisitions() : null}
+          {!loadingUser && activeItem === 'Gastos' ? renderExpenses() : null}
+          {!loadingUser && activeItem === 'P&L y reportes' ? renderPnl() : null}
           {!loadingUser && activeItem === 'Equipo' ? renderTeam() : null}
           {!loadingUser && activeItem === 'Waitlist' ? renderWaitlist() : null}
 
@@ -2604,6 +3126,8 @@ export function AppShellPage() {
           activeItem !== 'Dashboard' &&
           activeItem !== 'Cierres de turno' &&
           activeItem !== 'Requisiciones' &&
+          activeItem !== 'Gastos' &&
+          activeItem !== 'P&L y reportes' &&
           activeItem !== 'Equipo' &&
           activeItem !== 'Waitlist' ? (
             <p>

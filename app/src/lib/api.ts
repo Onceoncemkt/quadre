@@ -398,6 +398,133 @@ export async function getDashboardSummary({
   })
 }
 
+export type ExpenseCategory = {
+  id: string
+  businessId: string
+  name: string
+  kind: 'COSTO_VENTA' | 'OPERATIVO' | 'REMODELACION' | 'FINANCIERO'
+}
+
+export type ExpenseItem = {
+  id: string
+  locationId: string
+  categoryId: string
+  counterpartyId: string | null
+  date: string
+  concept: string
+  amount: string
+  method: 'EFECTIVO' | 'TARJETA' | 'TRANSFERENCIA' | 'APP' | 'OTRO'
+  paidFromCash: boolean
+  evidenceUrl: string | null
+  source: 'MANUAL' | 'REQUISITION' | 'PAYROLL' | 'LOAN_PAYMENT'
+  purchaseId: string | null
+  payrollEntryId: string | null
+  createdById: string | null
+  createdAt: string
+  category: ExpenseCategory
+  counterparty: Counterparty | null
+}
+
+export type PnlSummary = {
+  month: string
+  ingresos: number
+  costoVenta: number
+  operativos: number
+  financieros: number
+  utilidadBruta: number
+  utilidadOperativa: number
+  margen: number
+  desgloseCategorias: Array<{
+    categoria: string
+    kind: 'COSTO_VENTA' | 'OPERATIVO' | 'REMODELACION' | 'FINANCIERO'
+    total: number
+  }>
+}
+
+export async function getExpenseCategories({
+  token,
+  businessId,
+}: {
+  token: string
+  businessId: string
+}) {
+  return request<{ items: ExpenseCategory[] }>(`/businesses/${businessId}/expense-categories`, {
+    method: 'GET',
+    token,
+  })
+}
+
+export async function createExpense({
+  token,
+  locationId,
+  payload,
+}: {
+  token: string
+  locationId: string
+  payload: {
+    date: string
+    categoryId: string
+    concept: string
+    amount: number
+    method: 'EFECTIVO' | 'TARJETA' | 'TRANSFERENCIA' | 'OTRO'
+    counterpartyId?: string
+    paidFromCash?: boolean
+    notes?: string
+  }
+}) {
+  return request<{ expense: ExpenseItem }>(`/locations/${locationId}/expenses`, {
+    method: 'POST',
+    token,
+    body: payload,
+  })
+}
+
+export async function getLocationExpenses({
+  token,
+  locationId,
+  from,
+  to,
+  categoryId,
+}: {
+  token: string
+  locationId: string
+  from?: string
+  to?: string
+  categoryId?: string
+}) {
+  const params = new URLSearchParams()
+  if (from) params.set('from', from)
+  if (to) params.set('to', to)
+  if (categoryId) params.set('categoryId', categoryId)
+  const query = params.toString() ? `?${params.toString()}` : ''
+  return request<{ items: ExpenseItem[] }>(`/locations/${locationId}/expenses${query}`, {
+    method: 'GET',
+    token,
+  })
+}
+
+export async function deleteExpense({ token, expenseId }: { token: string; expenseId: string }) {
+  return request<{ deleted: boolean }>(`/expenses/${expenseId}`, {
+    method: 'DELETE',
+    token,
+  })
+}
+
+export async function getLocationPnl({
+  token,
+  locationId,
+  month,
+}: {
+  token: string
+  locationId: string
+  month: string
+}) {
+  return request<PnlSummary>(`/locations/${locationId}/pnl?month=${encodeURIComponent(month)}`, {
+    method: 'GET',
+    token,
+  })
+}
+
 export type BusinessMember = {
   id: string
   name: string

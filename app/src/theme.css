@@ -372,6 +372,123 @@ body {
   margin-top: 14px;
 }
 
+.q-month-nav {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.q-month-nav strong {
+  min-width: 140px;
+  text-align: center;
+}
+
+.q-expenses-total-card {
+  margin-top: 14px;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.q-expenses-total-card strong {
+  font-size: 30px;
+}
+
+.q-expenses-filter {
+  display: inline-grid;
+  gap: 6px;
+  color: var(--gris);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.q-expenses-filter select {
+  border: 1px solid var(--linea);
+  border-radius: 10px;
+  padding: 8px 10px;
+  background: var(--blanco);
+}
+
+.q-expense-form {
+  margin-top: 14px;
+  display: grid;
+  gap: 12px;
+}
+
+.q-expense-check {
+  margin-top: -2px;
+}
+
+.q-chip-auto {
+  margin-left: 8px;
+  padding: 4px 8px;
+  font-size: 11px;
+  color: var(--gris);
+  background: #f1f3ef;
+}
+
+.q-pnl-ticket {
+  margin-top: 16px;
+  display: grid;
+  gap: 8px;
+}
+
+.q-pnl-line {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 14px;
+}
+
+.q-pnl-line strong {
+  text-align: right;
+  min-width: 160px;
+}
+
+.q-pnl-line-indent {
+  padding-left: 18px;
+  color: var(--gris);
+}
+
+.q-pnl-divider {
+  border-top: 1px dashed #c9cdc2;
+  margin: 2px 0;
+}
+
+.q-pnl-subtotal {
+  font-weight: 800;
+}
+
+.q-pnl-final {
+  display: grid;
+  gap: 4px;
+  padding-top: 6px;
+}
+
+.q-pnl-final span {
+  font-size: 13px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.q-pnl-final strong {
+  font-size: 34px;
+  text-align: right;
+}
+
+.q-pnl-final.ok strong {
+  color: #335e00;
+}
+
+.q-pnl-final.falt strong {
+  color: var(--falt);
+}
+
+.q-pnl-final small {
+  text-align: right;
+  color: var(--gris);
+}
+
 .q-catalog-grid {
   margin-top: 16px;
   display: grid;
