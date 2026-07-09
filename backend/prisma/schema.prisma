@@ -263,6 +263,7 @@ model Counterparty {
   expenses   Expense[]
   requisitions Requisition[]
   priceHistory ItemPriceHistory[]
+  defaultForItems Item[] @relation("ItemDefaultSupplier")
 
   @@unique([businessId, name])
 }
@@ -330,9 +331,11 @@ model Item {
   unit       Unit     @default(PZA)
   category   String?  // Abarrotes, Carnes, Bebidas, Desechables...
   lastPrice  Decimal? @db.Decimal(12, 2) // se actualiza al recibir requisición
+  defaultCounterpartyId String?
   active     Boolean  @default(true)
 
   business   Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  defaultCounterparty Counterparty? @relation("ItemDefaultSupplier", fields: [defaultCounterpartyId], references: [id], onDelete: SetNull)
   lines      RequisitionLine[]
   priceHistory ItemPriceHistory[]
 

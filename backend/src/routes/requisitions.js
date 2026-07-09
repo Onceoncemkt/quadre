@@ -14,12 +14,38 @@ const createItemSchema = z.object({
   unit: z.enum(['PZA', 'KG', 'G', 'LT', 'ML', 'CAJA', 'PAQUETE', 'BOTELLA']),
   category: z.string().trim().min(1).optional(),
   lastPrice: z.coerce.number().nonnegative().optional(),
+  defaultCounterpartyId: z.string().trim().min(1).optional(),
 });
+
+const updateItemSchema = z
+  .object({
+    name: z.string().trim().min(1).optional(),
+    unit: z.enum(['PZA', 'KG', 'G', 'LT', 'ML', 'CAJA', 'PAQUETE', 'BOTELLA']).optional(),
+    category: z.union([z.string().trim().min(1), z.null()]).optional(),
+    lastPrice: z.union([z.coerce.number().nonnegative(), z.null()]).optional(),
+    defaultCounterpartyId: z.union([z.string().trim().min(1), z.null()]).optional(),
+  })
+  .refine((data) => Object.keys(data).length > 0, {
+    message: 'Debes enviar al menos un campo para actualizar',
+  });
+
+const updateCounterpartySchema = z
+  .object({
+    name: z.string().trim().min(1).optional(),
+    phone: z.union([z.string().trim().min(1), z.null()]).optional(),
+    paymentTerms: z.union([z.string().trim().min(1), z.null()]).optional(),
+    notes: z.union([z.string().trim().min(1), z.null()]).optional(),
+  })
+  .refine((data) => Object.keys(data).length > 0, {
+    message: 'Debes enviar al menos un campo para actualizar',
+  });
 
 const createCounterpartySchema = z.object({
   name: z.string().trim().min(1),
   type: z.enum(['SUPPLIER', 'LENDER']).optional(),
   phone: z.string().trim().min(1).optional(),
+  paymentTerms: z.string().trim().min(1).optional(),
+  notes: z.string().trim().min(1).optional(),
 });
 
 const createRequisitionSchema = z.object({
@@ -136,6 +162,16 @@ requisitionsRouter.post(
         res.status(400).json({ ok: false, error: 'Payload inválido', details: parsed.error.flatten() });
         return;
       }
+      if (parsed.data.defaultCounterpartyId) {
+        const counterparty = await prisma.counterparty.findUnique({
+          where: { id: parsed.data.defaultCounterpartyId },
+          select: { id: true, businessId: true },
+        });
+        if (!counterparty || counterparty.businessId !== businessId) {
+          res.status(400).json({ ok: false, error: 'Proveedor habitual inválido para este negocio' });
+          return;
+        }
+      }
 
       const item = await prisma.item.create({
         data: {
@@ -145,6 +181,16 @@ requisitionsRouter.post(
           category: parsed.data.category,
           lastPrice:
             typeof parsed.data.lastPrice === 'number' ? Number(parsed.data.lastPrice.toFixed(2)) : null,
+          defaultCounterpartyId: parsed.data.defaultCounterpartyId || null,
+        },
+        include: {
+          defaultCounterparty: {
+            select: {
+              id: true,
+              name: true,
+              phone: true,
+            },
+          },
         },
       });
 
@@ -168,11 +214,93 @@ requisitionsRouter.get(
       const { businessId } = req.params;
       const items = await prisma.item.findMany({
         where: { businessId, active: true },
+        include: {
+          defaultCounterparty: {
+            select: {
+              id: true,
+              name: true,
+              phone: true,
+            },
+          },
+        },
         orderBy: { name: 'asc' },
       });
 
       res.status(200).json({ ok: true, items });
     } catch (error) {
+      next(error);
+    }
+  },
+);
+
+requisitionsRouter.patch(
+  '/businesses/:businessId/items/:itemId',
+  authMiddleware,
+  requireRole((req) => req.params.businessId, managerRoles),
+  async (req, res, next) => {
+    try {
+      const { businessId, itemId } = req.params;
+      const parsed = updateItemSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ ok: false, error: 'Payload inválido', details: parsed.error.flatten() });
+        return;
+      }
+
+      const itemExists = await prisma.item.findUnique({
+        where: { id: itemId },
+        select: { id: true, businessId: true },
+      });
+      if (!itemExists || itemExists.businessId !== businessId) {
+        res.status(404).json({ ok: false, error: 'Insumo no encontrado para este negocio' });
+        return;
+      }
+
+      if (parsed.data.defaultCounterpartyId) {
+        const counterparty = await prisma.counterparty.findUnique({
+          where: { id: parsed.data.defaultCounterpartyId },
+          select: { id: true, businessId: true },
+        });
+        if (!counterparty || counterparty.businessId !== businessId) {
+          res.status(400).json({ ok: false, error: 'Proveedor habitual inválido para este negocio' });
+          return;
+        }
+      }
+
+      const item = await prisma.item.update({
+        where: { id: itemId },
+        data: {
+          ...(parsed.data.name !== undefined ? { name: parsed.data.name } : {}),
+          ...(parsed.data.unit !== undefined ? { unit: parsed.data.unit } : {}),
+          ...(parsed.data.category !== undefined ? { category: parsed.data.category } : {}),
+          ...(parsed.data.lastPrice !== undefined
+            ? {
+                lastPrice:
+                  typeof parsed.data.lastPrice === 'number'
+                    ? Number(parsed.data.lastPrice.toFixed(2))
+                    : null,
+              }
+            : {}),
+          ...(parsed.data.defaultCounterpartyId !== undefined
+            ? { defaultCounterpartyId: parsed.data.defaultCounterpartyId }
+            : {}),
+        },
+        include: {
+          defaultCounterparty: {
+            select: {
+              id: true,
+              name: true,
+              phone: true,
+            },
+          },
+        },
+      });
+
+      res.status(200).json({ ok: true, item });
+    } catch (error) {
+      if (error?.code === 'P2002') {
+        res.status(409).json({ ok: false, error: 'Ese insumo ya existe en este negocio' });
+        return;
+      }
       next(error);
     }
   },
@@ -197,6 +325,8 @@ requisitionsRouter.post(
           name: parsed.data.name,
           type: parsed.data.type || 'SUPPLIER',
           phone: parsed.data.phone,
+          paymentTerms: parsed.data.paymentTerms,
+          notes: parsed.data.notes,
         },
       });
 
@@ -225,6 +355,50 @@ requisitionsRouter.get(
 
       res.status(200).json({ ok: true, counterparties });
     } catch (error) {
+      next(error);
+    }
+  },
+);
+
+requisitionsRouter.patch(
+  '/businesses/:businessId/counterparties/:id',
+  authMiddleware,
+  requireRole((req) => req.params.businessId, managerRoles),
+  async (req, res, next) => {
+    try {
+      const { businessId, id } = req.params;
+      const parsed = updateCounterpartySchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ ok: false, error: 'Payload inválido', details: parsed.error.flatten() });
+        return;
+      }
+
+      const existing = await prisma.counterparty.findUnique({
+        where: { id },
+        select: { id: true, businessId: true },
+      });
+
+      if (!existing || existing.businessId !== businessId) {
+        res.status(404).json({ ok: false, error: 'Proveedor no encontrado para este negocio' });
+        return;
+      }
+
+      const counterparty = await prisma.counterparty.update({
+        where: { id },
+        data: {
+          ...(parsed.data.name !== undefined ? { name: parsed.data.name } : {}),
+          ...(parsed.data.phone !== undefined ? { phone: parsed.data.phone } : {}),
+          ...(parsed.data.paymentTerms !== undefined ? { paymentTerms: parsed.data.paymentTerms } : {}),
+          ...(parsed.data.notes !== undefined ? { notes: parsed.data.notes } : {}),
+        },
+      });
+
+      res.status(200).json({ ok: true, counterparty });
+    } catch (error) {
+      if (error?.code === 'P2002') {
+        res.status(409).json({ ok: false, error: 'Ese proveedor ya existe en este negocio' });
+        return;
+      }
       next(error);
     }
   },
@@ -272,6 +446,11 @@ requisitionsRouter.post('/locations/:locationId/requisitions', authMiddleware, a
         id: { in: itemIds },
         businessId: location.businessId,
       },
+      select: {
+        id: true,
+        lastPrice: true,
+        defaultCounterpartyId: true,
+      },
     });
     const itemsMap = new Map(items.map((item) => [item.id, item]));
     const missingItem = itemIds.find((itemId) => !itemsMap.has(itemId));
@@ -294,6 +473,19 @@ requisitionsRouter.post('/locations/:locationId/requisitions', authMiddleware, a
       };
     });
 
+    let requisitionCounterpartyId = parsed.data.counterpartyId || null;
+    if (!requisitionCounterpartyId) {
+      const defaultCounterparties = normalizedLines
+        .map((line) => itemsMap.get(line.itemId)?.defaultCounterpartyId || null)
+        .filter(Boolean);
+      if (defaultCounterparties.length === normalizedLines.length) {
+        const uniqueCounterparties = [...new Set(defaultCounterparties)];
+        if (uniqueCounterparties.length === 1) {
+          requisitionCounterpartyId = uniqueCounterparties[0];
+        }
+      }
+    }
+
     const estimatedTotal = Number(
       normalizedLines.reduce((sum, line) => sum + line.qty * line.unitPrice, 0).toFixed(2),
     );
@@ -313,7 +505,7 @@ requisitionsRouter.post('/locations/:locationId/requisitions', authMiddleware, a
       return tx.requisition.create({
         data: {
           locationId,
-          counterpartyId: parsed.data.counterpartyId || null,
+          counterpartyId: requisitionCounterpartyId,
           folio: nextFolio,
           status: 'PENDING_APPROVAL',
           requestedById: req.userId,
