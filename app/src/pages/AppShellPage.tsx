@@ -16,6 +16,7 @@ import {
   deleteBusinessCounterparty,
   deleteBusinessItem,
   getBusinessEnvelopes,
+  getEnvelopeMovements,
   getExpenseCategories,
   getBusinessCounterparties,
   getBusinessItems,
@@ -28,13 +29,16 @@ import {
   patchBusinessCounterparty,
   patchBusinessItem,
   receiveRequisition,
+  transferEnvelope,
   getShiftClosings,
   getWaitlist,
+  withdrawEnvelope,
   type BusinessMember,
   type BusinessItem,
   type Counterparty,
   type DashboardSummary,
   type EnvelopeItem,
+  type EnvelopeMovementItem,
   type ExpenseCategory,
   type ExpenseItem,
   type EnvelopesSummary,
@@ -158,6 +162,17 @@ type EnvelopePayDraft = {
   date: string
   amount: number
   method: 'EFECTIVO' | 'TARJETA' | 'TRANSFERENCIA' | 'APP' | 'OTRO'
+}
+
+type EnvelopeWithdrawDraft = {
+  amount: number
+  reason: string
+}
+
+type EnvelopeTransferDraft = {
+  toEnvelopeId: string
+  amount: number
+  note: string
 }
 
 const requisitionFilterOptions: Array<{ key: RequisitionsFilter; label: string }> = [
@@ -292,6 +307,25 @@ function formatDateFromIsoString(dateValue: string) {
   if (!year || !month || !day) return dateValue
   return `${day}/${month}/${year}`
 }
+
+function formatEnvelopeMovementType(type: string) {
+  const normalized = type.trim().toUpperCase()
+  if (normalized === 'DEPOSIT') return 'Abono'
+  if (normalized === 'PAY' || normalized === 'PAYMENT') return 'Pago'
+  if (normalized === 'WITHDRAW') return 'Retiro'
+  if (normalized === 'TRANSFER_OUT') return 'Transferencia enviada'
+  if (normalized === 'TRANSFER_IN') return 'Transferencia recibida'
+  return type
+}
+
+function getEnvelopeMovementSignedAmount(movement: EnvelopeMovementItem) {
+  const amount = asDecimal(movement.amount)
+  const normalized = movement.type.trim().toUpperCase()
+  if (normalized === 'DEPOSIT' || normalized === 'TRANSFER_IN') return amount
+  if (normalized === 'PAY' || normalized === 'PAYMENT' || normalized === 'WITHDRAW' || normalized === 'TRANSFER_OUT')
+    return amount * -1
+  return amount
+}
 function sanitizeDigits(value: string) {
   return value.replace(/\D/g, '')
 }
@@ -381,6 +415,10 @@ export function AppShellPage() {
   const [showEnvelopeForm, setShowEnvelopeForm] = useState(false)
   const [activeDepositEnvelopeId, setActiveDepositEnvelopeId] = useState('')
   const [activePayEnvelopeId, setActivePayEnvelopeId] = useState('')
+  const [activeWithdrawEnvelopeId, setActiveWithdrawEnvelopeId] = useState('')
+  const [activeTransferEnvelopeId, setActiveTransferEnvelopeId] = useState('')
+  const [activeMovementsEnvelopeId, setActiveMovementsEnvelopeId] = useState('')
+  const [loadingEnvelopeMovements, setLoadingEnvelopeMovements] = useState(false)
   const [envelopeDraft, setEnvelopeDraft] = useState<EnvelopeDraft>({
     name: '',
     targetAmount: 0,
@@ -391,6 +429,11 @@ export function AppShellPage() {
   })
   const [depositDraftByEnvelope, setDepositDraftByEnvelope] = useState<Record<string, EnvelopeDepositDraft>>({})
   const [payDraftByEnvelope, setPayDraftByEnvelope] = useState<Record<string, EnvelopePayDraft>>({})
+  const [withdrawDraftByEnvelope, setWithdrawDraftByEnvelope] = useState<Record<string, EnvelopeWithdrawDraft>>({})
+  const [transferDraftByEnvelope, setTransferDraftByEnvelope] = useState<Record<string, EnvelopeTransferDraft>>({})
+  const [envelopeMovementsByEnvelope, setEnvelopeMovementsByEnvelope] = useState<
+    Record<string, EnvelopeMovementItem[]>
+  >({})
   const [gastosMonth, setGastosMonth] = useState(getCurrentMonthInput())
   const [pnlMonth, setPnlMonth] = useState(getCurrentMonthInput())
   const [expensesCategoryFilter, setExpensesCategoryFilter] = useState('')
@@ -771,6 +814,14 @@ export function AppShellPage() {
     () => Number(Math.max(envelopesDailyTarget - envelopesAvailableCash, 0).toFixed(2)),
     [envelopesAvailableCash, envelopesDailyTarget],
   )
+  const activeEnvelopeMovements = useMemo(
+    () => (activeMovementsEnvelopeId ? envelopeMovementsByEnvelope[activeMovementsEnvelopeId] || [] : []),
+    [activeMovementsEnvelopeId, envelopeMovementsByEnvelope],
+  )
+  const activeMovementEnvelopeName = useMemo(
+    () => envelopeItems.find((item) => item.id === activeMovementsEnvelopeId)?.name || '',
+    [activeMovementsEnvelopeId, envelopeItems],
+  )
   const pnlIsEmpty = useMemo(() => {
     if (!pnlSummary) return true
     return (
@@ -886,6 +937,7 @@ export function AppShellPage() {
     if (!token || !selectedBusinessId) return
     const response = await getBusinessEnvelopes({ token, businessId: selectedBusinessId })
     setEnvelopesSummary(response)
+    return response
   }
 
   function resetExpenseDraft() {
@@ -1057,6 +1109,93 @@ export function AppShellPage() {
       setEnvelopesError(error instanceof Error ? error.message : 'No se pudo pagar el sobre')
     } finally {
       setSavingEnvelope(false)
+    }
+  }
+
+  async function handleWithdrawEnvelope(envelope: EnvelopeItem) {
+    if (!token) return
+    const draft = withdrawDraftByEnvelope[envelope.id]
+    if (!draft || draft.amount <= 0 || !draft.reason.trim()) {
+      setEnvelopesError('Monto y motivo son obligatorios para retirar')
+      return
+    }
+    setSavingEnvelope(true)
+    setEnvelopesError('')
+    setEnvelopesSuccess('')
+    try {
+      await withdrawEnvelope({
+        token,
+        envelopeId: envelope.id,
+        payload: {
+          amount: draft.amount,
+          reason: draft.reason.trim(),
+        },
+      })
+      const summary = await refreshEnvelopesData()
+      const updatedEnvelope = summary?.items.find((item) => item.id === envelope.id) || null
+      setEnvelopesSuccess(
+        `Retiro registrado ✓ Nuevo objetivo diario: ${formatMoney(updatedEnvelope?.dailyNeeded || 0)}/día`,
+      )
+      setWithdrawDraftByEnvelope((prev) => ({ ...prev, [envelope.id]: { amount: 0, reason: '' } }))
+      setActiveWithdrawEnvelopeId('')
+    } catch (error) {
+      setEnvelopesError(error instanceof Error ? error.message : 'No se pudo registrar el retiro')
+    } finally {
+      setSavingEnvelope(false)
+    }
+  }
+
+  async function handleTransferEnvelope(envelopeId: string) {
+    if (!token) return
+    const draft = transferDraftByEnvelope[envelopeId]
+    if (!draft || draft.amount <= 0 || !draft.toEnvelopeId) {
+      setEnvelopesError('Selecciona destino y captura un monto válido para transferir')
+      return
+    }
+    if (draft.toEnvelopeId === envelopeId) {
+      setEnvelopesError('El sobre destino debe ser distinto al origen')
+      return
+    }
+    setSavingEnvelope(true)
+    setEnvelopesError('')
+    setEnvelopesSuccess('')
+    try {
+      await transferEnvelope({
+        token,
+        envelopeId,
+        payload: {
+          toEnvelopeId: draft.toEnvelopeId,
+          amount: draft.amount,
+          note: draft.note.trim() || undefined,
+        },
+      })
+      await refreshEnvelopesData()
+      setEnvelopesSuccess('Transferencia registrada ✓')
+      setTransferDraftByEnvelope((prev) => ({
+        ...prev,
+        [envelopeId]: { toEnvelopeId: '', amount: 0, note: '' },
+      }))
+      setActiveTransferEnvelopeId('')
+    } catch (error) {
+      setEnvelopesError(error instanceof Error ? error.message : 'No se pudo registrar la transferencia')
+    } finally {
+      setSavingEnvelope(false)
+    }
+  }
+
+  async function handleOpenEnvelopeMovements(envelopeId: string) {
+    if (!token) return
+    setActiveMovementsEnvelopeId(envelopeId)
+    setLoadingEnvelopeMovements(true)
+    setEnvelopesError('')
+    try {
+      const response = await getEnvelopeMovements({ token, envelopeId })
+      setEnvelopeMovementsByEnvelope((prev) => ({ ...prev, [envelopeId]: response.items || [] }))
+    } catch (error) {
+      setActiveMovementsEnvelopeId('')
+      setEnvelopesError(error instanceof Error ? error.message : 'No se pudo cargar el historial del sobre')
+    } finally {
+      setLoadingEnvelopeMovements(false)
     }
   }
 
@@ -3164,6 +3303,13 @@ export function AppShellPage() {
               amount: asDecimal(envelope.targetAmount),
               method: 'TRANSFERENCIA',
             }
+            const withdrawDraft = withdrawDraftByEnvelope[envelope.id] || { amount: 0, reason: '' }
+            const transferTargets = envelopeItems.filter((item) => item.id !== envelope.id)
+            const transferDraft = transferDraftByEnvelope[envelope.id] || {
+              toEnvelopeId: transferTargets[0]?.id || '',
+              amount: 0,
+              note: '',
+            }
             return (
               <article className="q-card q-envelope-card" key={envelope.id}>
                 <h3>{envelope.name}</h3>
@@ -3201,6 +3347,31 @@ export function AppShellPage() {
                       Pagar
                     </button>
                   ) : null}
+                  {canDepositEnvelope ? (
+                    <button
+                      type="button"
+                      className="q-link-btn"
+                      onClick={() =>
+                        setActiveWithdrawEnvelopeId((prev) => (prev === envelope.id ? '' : envelope.id))
+                      }
+                    >
+                      Retirar
+                    </button>
+                  ) : null}
+                  {canDepositEnvelope ? (
+                    <button
+                      type="button"
+                      className="q-link-btn"
+                      onClick={() =>
+                        setActiveTransferEnvelopeId((prev) => (prev === envelope.id ? '' : envelope.id))
+                      }
+                    >
+                      Transferir
+                    </button>
+                  ) : null}
+                  <button type="button" className="q-link-btn" onClick={() => handleOpenEnvelopeMovements(envelope.id)}>
+                    Historial
+                  </button>
                   {canCreateEnvelope ? (
                     <button
                       type="button"
@@ -3297,9 +3468,126 @@ export function AppShellPage() {
                     </button>
                   </div>
                 ) : null}
+
+                {activeWithdrawEnvelopeId === envelope.id ? (
+                  <div className="q-envelope-mini-form">
+                    <input
+                      type="number"
+                      min={0}
+                      step="0.01"
+                      placeholder="Monto a retirar"
+                      value={withdrawDraft.amount}
+                      onChange={(event) =>
+                        setWithdrawDraftByEnvelope((prev) => ({
+                          ...prev,
+                          [envelope.id]: { ...withdrawDraft, amount: asNumber(event.target.value) },
+                        }))
+                      }
+                    />
+                    <input
+                      type="text"
+                      placeholder="Motivo (obligatorio)"
+                      value={withdrawDraft.reason}
+                      onChange={(event) =>
+                        setWithdrawDraftByEnvelope((prev) => ({
+                          ...prev,
+                          [envelope.id]: { ...withdrawDraft, reason: event.target.value },
+                        }))
+                      }
+                    />
+                    <button className="q-btn q-btn-inline" type="button" onClick={() => handleWithdrawEnvelope(envelope)}>
+                      Confirmar retiro
+                    </button>
+                  </div>
+                ) : null}
+
+                {activeTransferEnvelopeId === envelope.id ? (
+                  <div className="q-envelope-mini-form">
+                    <select
+                      value={transferDraft.toEnvelopeId}
+                      onChange={(event) =>
+                        setTransferDraftByEnvelope((prev) => ({
+                          ...prev,
+                          [envelope.id]: { ...transferDraft, toEnvelopeId: event.target.value },
+                        }))
+                      }
+                    >
+                      {transferTargets.length ? null : <option value="">No hay otro sobre disponible</option>}
+                      {transferTargets.map((target) => (
+                        <option key={target.id} value={target.id}>
+                          {target.name}
+                        </option>
+                      ))}
+                    </select>
+                    <input
+                      type="number"
+                      min={0}
+                      step="0.01"
+                      placeholder="Monto a transferir"
+                      value={transferDraft.amount}
+                      onChange={(event) =>
+                        setTransferDraftByEnvelope((prev) => ({
+                          ...prev,
+                          [envelope.id]: { ...transferDraft, amount: asNumber(event.target.value) },
+                        }))
+                      }
+                    />
+                    <input
+                      type="text"
+                      placeholder="Nota (opcional)"
+                      value={transferDraft.note}
+                      onChange={(event) =>
+                        setTransferDraftByEnvelope((prev) => ({
+                          ...prev,
+                          [envelope.id]: { ...transferDraft, note: event.target.value },
+                        }))
+                      }
+                    />
+                    <button className="q-btn q-btn-inline" type="button" onClick={() => handleTransferEnvelope(envelope.id)}>
+                      Confirmar transferencia
+                    </button>
+                  </div>
+                ) : null}
               </article>
             )
           })}
+        </div>
+      ) : null}
+      {activeMovementsEnvelopeId ? (
+        <div className="q-modal-overlay" role="presentation" onClick={() => setActiveMovementsEnvelopeId('')}>
+          <div className="q-modal-card q-envelope-movements-modal" role="dialog" onClick={(event) => event.stopPropagation()}>
+            <div className="q-close-form-header">
+              <h2>Movimientos · {activeMovementEnvelopeName}</h2>
+              <button type="button" className="q-link-btn" onClick={() => setActiveMovementsEnvelopeId('')}>
+                Cerrar
+              </button>
+            </div>
+            {loadingEnvelopeMovements ? <p>Cargando movimientos...</p> : null}
+            {!loadingEnvelopeMovements && !activeEnvelopeMovements.length ? (
+              <p className="q-table-muted">Aún no hay movimientos en este sobre.</p>
+            ) : null}
+            {!loadingEnvelopeMovements && activeEnvelopeMovements.length ? (
+              <div className="q-envelope-movements-list">
+                {activeEnvelopeMovements.map((movement) => {
+                  const signedAmount = getEnvelopeMovementSignedAmount(movement)
+                  const note = movement.reason?.trim() || movement.note?.trim() || ''
+                  return (
+                    <article className="q-envelope-movement-row" key={movement.id}>
+                      <div className="q-envelope-movement-main">
+                        <strong>{formatEnvelopeMovementType(movement.type)}</strong>
+                        <span className="q-table-muted">{formatDateFromIsoString(movement.date)}</span>
+                        {note ? <p className="q-envelope-movement-note">{note}</p> : null}
+                      </div>
+                      <strong className={`q-mono q-envelope-movement-amount ${signedAmount >= 0 ? 'ok' : 'falt'}`}>
+                        {signedAmount >= 0 ? '+' : '-'}
+                        {formatMoney(Math.abs(signedAmount))}
+                      </strong>
+                    </article>
+                  )
+                })}
+              </div>
+            ) : null}
+          </div>
         </div>
       ) : null}
     </section>

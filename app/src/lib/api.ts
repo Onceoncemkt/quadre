@@ -41,6 +41,7 @@ export async function register(input: {
   })
 }
 
+
 export type BusinessItem = {
   id: string
   businessId: string
@@ -535,6 +536,16 @@ export type EnvelopesSummary = {
   totalDailyNeeded: number
   availableCashToday: number
 }
+
+export type EnvelopeMovementItem = {
+  id: string
+  envelopeId: string
+  type: string
+  date: string
+  amount: string | number
+  note?: string | null
+  reason?: string | null
+}
 export async function getLocationPnl({
   token,
   locationId,
@@ -630,6 +641,60 @@ export async function payEnvelope({
 export async function deleteEnvelope({ token, envelopeId }: { token: string; envelopeId: string }) {
   return request<{ deleted: boolean; deactivated: boolean }>(`/envelopes/${envelopeId}`, {
     method: 'DELETE',
+    token,
+  })
+}
+
+export async function withdrawEnvelope({
+  token,
+  envelopeId,
+  payload,
+}: {
+  token: string
+  envelopeId: string
+  payload: {
+    amount: number
+    reason: string
+    date?: string
+  }
+}) {
+  return request<{ ok: true }>(`/envelopes/${envelopeId}/withdraw`, {
+    method: 'POST',
+    token,
+    body: payload,
+  })
+}
+
+export async function transferEnvelope({
+  token,
+  envelopeId,
+  payload,
+}: {
+  token: string
+  envelopeId: string
+  payload: {
+    toEnvelopeId: string
+    amount: number
+    note?: string
+    date?: string
+  }
+}) {
+  return request<{ ok: true }>(`/envelopes/${envelopeId}/transfer`, {
+    method: 'POST',
+    token,
+    body: payload,
+  })
+}
+
+export async function getEnvelopeMovements({
+  token,
+  envelopeId,
+}: {
+  token: string
+  envelopeId: string
+}) {
+  return request<{ items: EnvelopeMovementItem[] }>(`/envelopes/${envelopeId}/movements`, {
+    method: 'GET',
     token,
   })
 }

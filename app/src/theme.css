@@ -493,6 +493,43 @@ body {
   background: var(--blanco);
 }
 
+.q-envelope-movements-modal {
+  width: min(680px, 100%);
+}
+
+.q-envelope-movements-list {
+  display: grid;
+  gap: 10px;
+}
+
+.q-envelope-movement-row {
+  border: 1px solid var(--linea);
+  border-radius: 12px;
+  padding: 10px 12px;
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.q-envelope-movement-main {
+  display: grid;
+  gap: 4px;
+}
+
+.q-envelope-movement-note {
+  margin: 2px 0 0;
+  color: var(--gris);
+}
+
+.q-envelope-movement-amount.ok {
+  color: #335e00;
+}
+
+.q-envelope-movement-amount.falt {
+  color: var(--falt);
+}
+
 .q-pnl-ticket {
   margin-top: 16px;
   display: grid;
