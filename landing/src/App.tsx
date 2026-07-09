@@ -11,9 +11,9 @@ const css = `
 @import url('https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=Spline+Sans+Mono:wght@400;500;700&display=swap');
 
 .q-root{
-  --tinta:#101613;--tinta2:#1A231E;--verde:#0E8A57;--verdeh:#0C744A;
+  --tinta:#22333D;--tinta2:#2C4150;--verde:#3E5866;--verdeh:#324A57;
   --cuadro:#C1FF72;--papel:#F7F7F2;--blanco:#fff;--falt:#E4573D;
-  --gris:#5C6660;--linea:#E3E4DC;--lineaD:#2A342E;
+  --gris:#5C6660;--linea:#E3E4DC;--lineaD:#3A505E;
   background:var(--papel);color:var(--tinta);
   font-family:'Archivo',sans-serif;font-size:17px;line-height:1.6;
   -webkit-font-smoothing:antialiased;overflow-x:hidden;
@@ -307,8 +307,7 @@ function App() {
       <div className="q-wrap">
         <nav className="q-nav">
           <div className="q-logo">
-            <LogoQ />
-            <span className="w">quadre</span>
+            <img src="/logo.png" alt="Quadre" style={{height:44}} />
           </div>
           <a className="q-btn" href="#waitlist">Unirme a la lista</a>
         </nav>
@@ -543,7 +542,10 @@ function App() {
 
       <footer className="q-footer">
         <div className="q-wrap" style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10, padding: 0 }}>
-          <span>quadre.mx · hecho en Hidalgo, México</span>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+            <LogoQ size={16} ink="#22333D" check="#3E5866" />
+            quadre.mx · hecho en Hidalgo, México
+          </span>
           <span>donde todo cuadra <b>✓</b></span>
         </div>
       </footer>
