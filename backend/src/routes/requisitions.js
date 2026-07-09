@@ -24,6 +24,7 @@ const updateItemSchema = z
     category: z.union([z.string().trim().min(1), z.null()]).optional(),
     lastPrice: z.union([z.coerce.number().nonnegative(), z.null()]).optional(),
     defaultCounterpartyId: z.union([z.string().trim().min(1), z.null()]).optional(),
+    active: z.boolean().optional(),
   })
   .refine((data) => Object.keys(data).length > 0, {
     message: 'Debes enviar al menos un campo para actualizar',
@@ -35,6 +36,7 @@ const updateCounterpartySchema = z
     phone: z.union([z.string().trim().min(1), z.null()]).optional(),
     paymentTerms: z.union([z.string().trim().min(1), z.null()]).optional(),
     notes: z.union([z.string().trim().min(1), z.null()]).optional(),
+    active: z.boolean().optional(),
   })
   .refine((data) => Object.keys(data).length > 0, {
     message: 'Debes enviar al menos un campo para actualizar',
@@ -165,9 +167,9 @@ requisitionsRouter.post(
       if (parsed.data.defaultCounterpartyId) {
         const counterparty = await prisma.counterparty.findUnique({
           where: { id: parsed.data.defaultCounterpartyId },
-          select: { id: true, businessId: true },
+          select: { id: true, businessId: true, active: true },
         });
-        if (!counterparty || counterparty.businessId !== businessId) {
+        if (!counterparty || counterparty.businessId !== businessId || !counterparty.active) {
           res.status(400).json({ ok: false, error: 'Proveedor habitual inválido para este negocio' });
           return;
         }
@@ -205,6 +207,122 @@ requisitionsRouter.post(
   },
 );
 
+requisitionsRouter.delete(
+  '/businesses/:businessId/items/:itemId',
+  authMiddleware,
+  requireRole((req) => req.params.businessId, managerRoles),
+  async (req, res, next) => {
+    try {
+      const { businessId, itemId } = req.params;
+      const existing = await prisma.item.findUnique({
+        where: { id: itemId },
+        select: { id: true, businessId: true },
+      });
+      if (!existing || existing.businessId !== businessId) {
+        res.status(404).json({ ok: false, error: 'Insumo no encontrado para este negocio' });
+        return;
+      }
+
+      const usage = await prisma.item.findUnique({
+        where: { id: itemId },
+        select: {
+          _count: {
+            select: {
+              lines: true,
+              priceHistory: true,
+            },
+          },
+        },
+      });
+      const hasHistory = Boolean((usage?._count.lines || 0) + (usage?._count.priceHistory || 0));
+
+      if (!hasHistory) {
+        await prisma.item.delete({ where: { id: itemId } });
+        res.status(200).json({ ok: true, deleted: true, deactivated: false, message: 'Insumo eliminado' });
+        return;
+      }
+
+      await prisma.item.update({
+        where: { id: itemId },
+        data: { active: false, defaultCounterpartyId: null },
+      });
+      res.status(200).json({
+        ok: true,
+        deleted: false,
+        deactivated: true,
+        message: 'Se desactivó porque tiene historial — ya no aparecerá en nuevas requisiciones',
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+requisitionsRouter.delete(
+  '/businesses/:businessId/counterparties/:id',
+  authMiddleware,
+  requireRole((req) => req.params.businessId, managerRoles),
+  async (req, res, next) => {
+    try {
+      const { businessId, id } = req.params;
+      const existing = await prisma.counterparty.findUnique({
+        where: { id },
+        select: { id: true, businessId: true },
+      });
+      if (!existing || existing.businessId !== businessId) {
+        res.status(404).json({ ok: false, error: 'Proveedor no encontrado para este negocio' });
+        return;
+      }
+
+      const usage = await prisma.counterparty.findUnique({
+        where: { id },
+        select: {
+          _count: {
+            select: {
+              purchases: true,
+              requisitions: true,
+              defaultForItems: true,
+              priceHistory: true,
+            },
+          },
+        },
+      });
+      const hasHistory = Boolean(
+        (usage?._count.purchases || 0) +
+          (usage?._count.requisitions || 0) +
+          (usage?._count.defaultForItems || 0) +
+          (usage?._count.priceHistory || 0),
+      );
+
+      if (!hasHistory) {
+        await prisma.counterparty.delete({ where: { id } });
+        res.status(200).json({ ok: true, deleted: true, deactivated: false, message: 'Proveedor eliminado' });
+        return;
+      }
+
+      await prisma.$transaction(async (tx) => {
+        await tx.item.updateMany({
+          where: { businessId, defaultCounterpartyId: id },
+          data: { defaultCounterpartyId: null },
+        });
+        await tx.counterparty.update({
+          where: { id },
+          data: { active: false },
+        });
+      });
+
+      res.status(200).json({
+        ok: true,
+        deleted: false,
+        deactivated: true,
+        message: 'Se desactivó porque tiene historial — ya no aparecerá en nuevas requisiciones',
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
 requisitionsRouter.get(
   '/businesses/:businessId/items',
   authMiddleware,
@@ -212,8 +330,9 @@ requisitionsRouter.get(
   async (req, res, next) => {
     try {
       const { businessId } = req.params;
+      const includeAll = String(req.query.all || '').toLowerCase() === 'true';
       const items = await prisma.item.findMany({
-        where: { businessId, active: true },
+        where: { businessId, ...(includeAll ? {} : { active: true }) },
         include: {
           defaultCounterparty: {
             select: {
@@ -258,9 +377,9 @@ requisitionsRouter.patch(
       if (parsed.data.defaultCounterpartyId) {
         const counterparty = await prisma.counterparty.findUnique({
           where: { id: parsed.data.defaultCounterpartyId },
-          select: { id: true, businessId: true },
+          select: { id: true, businessId: true, active: true },
         });
-        if (!counterparty || counterparty.businessId !== businessId) {
+        if (!counterparty || counterparty.businessId !== businessId || !counterparty.active) {
           res.status(400).json({ ok: false, error: 'Proveedor habitual inválido para este negocio' });
           return;
         }
@@ -283,6 +402,7 @@ requisitionsRouter.patch(
           ...(parsed.data.defaultCounterpartyId !== undefined
             ? { defaultCounterpartyId: parsed.data.defaultCounterpartyId }
             : {}),
+          ...(parsed.data.active !== undefined ? { active: parsed.data.active } : {}),
         },
         include: {
           defaultCounterparty: {
@@ -348,8 +468,9 @@ requisitionsRouter.get(
   async (req, res, next) => {
     try {
       const { businessId } = req.params;
+      const includeAll = String(req.query.all || '').toLowerCase() === 'true';
       const counterparties = await prisma.counterparty.findMany({
-        where: { businessId, active: true },
+        where: { businessId, ...(includeAll ? {} : { active: true }) },
         orderBy: { name: 'asc' },
       });
 
@@ -390,6 +511,7 @@ requisitionsRouter.patch(
           ...(parsed.data.phone !== undefined ? { phone: parsed.data.phone } : {}),
           ...(parsed.data.paymentTerms !== undefined ? { paymentTerms: parsed.data.paymentTerms } : {}),
           ...(parsed.data.notes !== undefined ? { notes: parsed.data.notes } : {}),
+          ...(parsed.data.active !== undefined ? { active: parsed.data.active } : {}),
         },
       });
 
@@ -431,10 +553,10 @@ requisitionsRouter.post('/locations/:locationId/requisitions', authMiddleware, a
     if (parsed.data.counterpartyId) {
       const counterparty = await prisma.counterparty.findUnique({
         where: { id: parsed.data.counterpartyId },
-        select: { id: true, businessId: true },
+        select: { id: true, businessId: true, active: true },
       });
 
-      if (!counterparty || counterparty.businessId !== location.businessId) {
+      if (!counterparty || counterparty.businessId !== location.businessId || !counterparty.active) {
         res.status(400).json({ ok: false, error: 'Proveedor inválido para este negocio' });
         return;
       }
@@ -445,6 +567,7 @@ requisitionsRouter.post('/locations/:locationId/requisitions', authMiddleware, a
       where: {
         id: { in: itemIds },
         businessId: location.businessId,
+        active: true,
       },
       select: {
         id: true,
