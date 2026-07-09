@@ -93,6 +93,12 @@ function formatMoney(value: number) {
 function formatShiftType(type: string) {
   return type.charAt(0) + type.slice(1).toLowerCase()
 }
+function formatShiftDate(dateValue: string) {
+  const dateOnly = dateValue.slice(0, 10)
+  const [year, month, day] = dateOnly.split('-')
+  if (!year || !month || !day) return dateValue
+  return `${day}/${month}/${year}`
+}
 
 function getTotals(draft: ClosingDraft) {
   const efectivoVentas = draft.lines
@@ -539,7 +545,7 @@ export function AppShellPage() {
                   <tr key={item.id}>
                     <td>
                       <div className="q-table-turn">
-                        <strong>{new Date(item.shift.date).toLocaleDateString('es-MX')}</strong>
+                        <strong>{formatShiftDate(item.shift.date)}</strong>
                         <span>
                           {formatShiftType(item.shift.type)} · {selectedLocationName || 'Sucursal'}
                         </span>
