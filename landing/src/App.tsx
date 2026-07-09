@@ -320,7 +320,7 @@ function App() {
         {/* ================= HERO ================= */}
         <header className="q-hero">
           <div>
-            <div className="q-eyebrow">Control de dinero para restaurantes y bares</div>
+            <div className="q-eyebrow">Control de dinero para restaurantes, bares y cafeterías</div>
             <h1 className="q-h1">La caja no se cuadra sola. <em>Cuádrala.</em></h1>
             <p>
               Cierres de turno con arqueo, requisiciones costeadas, adeudos con proveedores y nómina
