@@ -1,6 +1,7 @@
 const { Router } = require('express');
 const { prisma } = require('../lib/prisma');
 const { authMiddleware } = require('../middleware/auth');
+const { isSuperAdminEmail } = require('../lib/superAdmin');
 
 const meRouter = Router();
 
@@ -33,6 +34,7 @@ meRouter.get('/me', authMiddleware, async (req, res, next) => {
         id: user.id,
         name: user.name,
         email: user.email,
+        isSuperAdmin: isSuperAdminEmail(user.email),
       },
       memberships: user.memberships,
     });

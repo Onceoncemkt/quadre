@@ -3,6 +3,7 @@ const rateLimit = require('express-rate-limit');
 const { z } = require('zod');
 const { prisma } = require('../lib/prisma');
 const { authMiddleware } = require('../middleware/auth');
+const { requireSuperAdmin } = require('../middleware/requireSuperAdmin');
 
 const waitlistRouter = Router();
 
@@ -26,7 +27,7 @@ const waitlistSchema = z.object({
   source: z.string().trim().min(1).optional(),
 });
 
-waitlistRouter.get('/waitlist', authMiddleware, async (_req, res, next) => {
+waitlistRouter.get('/waitlist', authMiddleware, requireSuperAdmin, async (_req, res, next) => {
   try {
     const items = await prisma.waitlistLead.findMany({
       orderBy: {

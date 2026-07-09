@@ -3,6 +3,7 @@ const { z } = require('zod');
 const { prisma } = require('../lib/prisma');
 const { hashPassword, signAuthToken, verifyPassword } = require('../lib/auth');
 const { generateUniqueBusinessSlug } = require('../lib/slug');
+const { isSuperAdminEmail } = require('../lib/superAdmin');
 
 const authRouter = Router();
 
@@ -146,6 +147,7 @@ authRouter.post('/login', async (req, res, next) => {
         id: user.id,
         name: user.name,
         email: user.email,
+        isSuperAdmin: isSuperAdminEmail(user.email),
       },
       memberships: user.memberships,
     });
