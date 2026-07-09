@@ -2,6 +2,7 @@ const { Router } = require('express');
 const rateLimit = require('express-rate-limit');
 const { z } = require('zod');
 const { prisma } = require('../lib/prisma');
+const { authMiddleware } = require('../middleware/auth');
 
 const waitlistRouter = Router();
 
@@ -23,6 +24,23 @@ const waitlistSchema = z.object({
   businessName: z.string().trim().min(1).optional(),
   businessType: z.string().trim().min(1).optional(),
   source: z.string().trim().min(1).optional(),
+});
+
+waitlistRouter.get('/waitlist', authMiddleware, async (_req, res, next) => {
+  try {
+    const items = await prisma.waitlistLead.findMany({
+      orderBy: {
+        createdAt: 'desc',
+      },
+    });
+
+    res.status(200).json({
+      ok: true,
+      items,
+    });
+  } catch (error) {
+    next(error);
+  }
 });
 
 waitlistRouter.post('/waitlist', waitlistLimiter, async (req, res, next) => {
