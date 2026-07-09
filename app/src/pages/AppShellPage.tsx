@@ -1,9 +1,12 @@
 import type { FormEvent } from 'react'
 import { useEffect, useMemo, useState } from 'react'
 import {
+  createBusinessMember,
   createShiftClosing,
+  getBusinessMembers,
   getShiftClosings,
   getWaitlist,
+  type BusinessMember,
   type ShiftClosingItem,
   type WaitlistLead,
 } from '../lib/api'
@@ -19,6 +22,10 @@ const navGroups = [
     items: ['Proveedores y adeudos', 'Nómina', 'Gastos', 'P&L y reportes'],
   },
 ]
+const configGroup = {
+  title: 'Configuración',
+  items: ['Equipo'],
+}
 const superAdminGroup = {
   title: 'Quadre HQ',
   items: ['Waitlist'],
@@ -103,6 +110,12 @@ function formatMoney(value: number) {
 function formatShiftType(type: string) {
   return type.charAt(0) + type.slice(1).toLowerCase()
 }
+function formatTeamRole(role: 'OWNER' | 'ADMIN' | 'MANAGER' | 'STAFF') {
+  if (role === 'OWNER') return 'Owner'
+  if (role === 'ADMIN') return 'Administrador'
+  if (role === 'MANAGER') return 'Gerente'
+  return 'Staff'
+}
 function formatDateFromIsoString(dateValue: string) {
   const dateOnly = dateValue.slice(0, 10)
   const [year, month, day] = dateOnly.split('-')
@@ -155,6 +168,19 @@ export function AppShellPage() {
   const [waitlistLeads, setWaitlistLeads] = useState<WaitlistLead[]>([])
   const [loadingWaitlist, setLoadingWaitlist] = useState(false)
   const [waitlistError, setWaitlistError] = useState('')
+  const [teamMembers, setTeamMembers] = useState<BusinessMember[]>([])
+  const [loadingTeam, setLoadingTeam] = useState(false)
+  const [teamError, setTeamError] = useState('')
+  const [showAddMemberForm, setShowAddMemberForm] = useState(false)
+  const [savingMember, setSavingMember] = useState(false)
+  const [addMemberError, setAddMemberError] = useState('')
+  const [memberForm, setMemberForm] = useState({
+    name: '',
+    email: '',
+    password: '',
+    role: 'MANAGER' as 'ADMIN' | 'MANAGER' | 'STAFF',
+    locationId: 'ALL',
+  })
   const [closeDraft, setCloseDraft] = useState<ClosingDraft>({
     date: getTodayDateInput(),
     type: 'UNICO',
@@ -181,6 +207,11 @@ export function AppShellPage() {
     () => memberships.find((m) => m.business.id === selectedBusinessId)?.business,
     [memberships, selectedBusinessId],
   )
+  const selectedBusinessMembership = useMemo(
+    () => memberships.find((m) => m.business.id === selectedBusinessId) || null,
+    [memberships, selectedBusinessId],
+  )
+  const canManageTeam = selectedBusinessMembership?.role === 'OWNER' || selectedBusinessMembership?.role === 'ADMIN'
 
   useEffect(() => {
     if (selectedBusiness?.locations?.length) {
@@ -224,6 +255,21 @@ export function AppShellPage() {
       })
       .finally(() => setLoadingWaitlist(false))
   }, [activeItem, token, user?.isSuperAdmin])
+  useEffect(() => {
+    if (activeItem !== 'Equipo' || !token || !selectedBusinessId || !canManageTeam) return
+    setLoadingTeam(true)
+    setTeamError('')
+    getBusinessMembers({
+      token,
+      businessId: selectedBusinessId,
+    })
+      .then((response) => setTeamMembers(response.items))
+      .catch((error) => {
+        setTeamMembers([])
+        setTeamError(error instanceof Error ? error.message : 'No se pudo cargar el equipo')
+      })
+      .finally(() => setLoadingTeam(false))
+  }, [activeItem, canManageTeam, selectedBusinessId, token])
 
   const selectedLocationName = useMemo(() => {
     return selectedBusiness?.locations.find((location) => location.id === selectedLocationId)?.name || ''
@@ -231,15 +277,22 @@ export function AppShellPage() {
 
   const closingTotals = useMemo(() => getTotals(closeDraft), [closeDraft])
   const visibleNavGroups = useMemo(() => {
-    if (user?.isSuperAdmin) return [...navGroups, superAdminGroup]
-    return navGroups
-  }, [user?.isSuperAdmin])
+    const groups = [...navGroups]
+    if (canManageTeam) groups.push(configGroup)
+    if (user?.isSuperAdmin) groups.push(superAdminGroup)
+    return groups
+  }, [canManageTeam, user?.isSuperAdmin])
 
   useEffect(() => {
     if (!user?.isSuperAdmin && activeItem === 'Waitlist') {
       setActiveItem('Dashboard')
     }
   }, [activeItem, user?.isSuperAdmin])
+  useEffect(() => {
+    if (!canManageTeam && activeItem === 'Equipo') {
+      setActiveItem('Dashboard')
+    }
+  }, [activeItem, canManageTeam])
 
   useEffect(() => {
     if (!isMobileMenuOpen) return
@@ -340,6 +393,14 @@ export function AppShellPage() {
     })
   }
 
+  async function refreshTeamMembers() {
+    if (!token || !selectedBusinessId) return
+    const response = await getBusinessMembers({
+      token,
+      businessId: selectedBusinessId,
+    })
+    setTeamMembers(response.items)
+  }
   function resetCloseForm() {
     setCloseDraft({
       date: getTodayDateInput(),
@@ -353,6 +414,16 @@ export function AppShellPage() {
     setCloseError('')
   }
 
+  function resetMemberForm() {
+    setMemberForm({
+      name: '',
+      email: '',
+      password: '',
+      role: 'MANAGER',
+      locationId: 'ALL',
+    })
+    setAddMemberError('')
+  }
   async function handleCreateClosing(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (!selectedLocationId || !token) return
@@ -688,7 +759,159 @@ export function AppShellPage() {
       ) : null}
     </section>
   )
+  const renderTeam = () => (
+    <section className="q-shift-closings">
+      <header className="q-section-header">
+        <div>
+          <h1>Equipo</h1>
+          <p>{teamMembers.length} miembros</p>
+        </div>
+        <button
+          className="q-btn q-btn-inline"
+          type="button"
+          onClick={() => {
+            resetMemberForm()
+            setShowAddMemberForm((prev) => !prev)
+          }}
+        >
+          Agregar miembro
+        </button>
+      </header>
 
+      {showAddMemberForm ? (
+        <form className="q-card q-team-form" onSubmit={handleCreateMember}>
+          <div className="q-field-grid-2">
+            <label className="q-field">
+              Nombre
+              <input
+                type="text"
+                required
+                value={memberForm.name}
+                onChange={(event) => setMemberForm((prev) => ({ ...prev, name: event.target.value }))}
+              />
+            </label>
+            <label className="q-field">
+              Email
+              <input
+                type="email"
+                required
+                value={memberForm.email}
+                onChange={(event) => setMemberForm((prev) => ({ ...prev, email: event.target.value }))}
+              />
+            </label>
+          </div>
+          <div className="q-field-grid-3">
+            <label className="q-field">
+              Password temporal
+              <input
+                type="password"
+                required
+                minLength={8}
+                value={memberForm.password}
+                onChange={(event) => setMemberForm((prev) => ({ ...prev, password: event.target.value }))}
+              />
+            </label>
+            <label className="q-field">
+              Rol
+              <select
+                value={memberForm.role}
+                onChange={(event) =>
+                  setMemberForm((prev) => ({
+                    ...prev,
+                    role: event.target.value as 'ADMIN' | 'MANAGER' | 'STAFF',
+                  }))
+                }
+              >
+                <option value="ADMIN">Administrador</option>
+                <option value="MANAGER">Gerente</option>
+                <option value="STAFF">Staff</option>
+              </select>
+            </label>
+            <label className="q-field">
+              Sucursal
+              <select
+                value={memberForm.locationId}
+                onChange={(event) => setMemberForm((prev) => ({ ...prev, locationId: event.target.value }))}
+              >
+                <option value="ALL">Todas las sucursales</option>
+                {(selectedBusiness?.locations || []).map((location) => (
+                  <option key={location.id} value={location.id}>
+                    {location.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          {addMemberError ? <p className="q-error-text">{addMemberError}</p> : null}
+          <button className="q-btn q-btn-inline" type="submit" disabled={savingMember}>
+            {savingMember ? 'Guardando...' : 'Guardar miembro'}
+          </button>
+        </form>
+      ) : null}
+
+      {loadingTeam ? <p>Cargando equipo...</p> : null}
+      {teamError ? <p className="q-error-text">{teamError}</p> : null}
+
+      {!loadingTeam && !teamError && !teamMembers.length ? (
+        <section className="q-card q-empty-state">
+          <h3>Aún no hay miembros registrados</h3>
+          <p>Agrega al primer miembro para comenzar a colaborar.</p>
+        </section>
+      ) : null}
+
+      {!loadingTeam && !teamError && teamMembers.length ? (
+        <div className="q-table-wrap">
+          <table className="q-table">
+            <thead>
+              <tr>
+                <th>Nombre</th>
+                <th>Email</th>
+                <th>Rol</th>
+                <th>Sucursal</th>
+              </tr>
+            </thead>
+            <tbody>
+              {teamMembers.map((member) => (
+                <tr key={member.id}>
+                  <td>{member.name}</td>
+                  <td>{member.email}</td>
+                  <td>{formatTeamRole(member.role)}</td>
+                  <td>{member.locationName || 'Todas'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+    </section>
+  )
+
+  async function handleCreateMember(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!token || !selectedBusinessId) return
+    setSavingMember(true)
+    setAddMemberError('')
+    try {
+      await createBusinessMember({
+        token,
+        businessId: selectedBusinessId,
+        payload: {
+          name: memberForm.name,
+          email: memberForm.email,
+          password: memberForm.password,
+          role: memberForm.role,
+          locationId: memberForm.locationId === 'ALL' ? null : memberForm.locationId,
+        },
+      })
+      await refreshTeamMembers()
+      resetMemberForm()
+      setShowAddMemberForm(false)
+    } catch (error) {
+      setAddMemberError(error instanceof Error ? error.message : 'No se pudo crear el miembro')
+    } finally {
+      setSavingMember(false)
+    }
+  }
   const renderWaitlist = () => (
     <section className="q-shift-closings">
       <header className="q-section-header">
@@ -833,11 +1056,13 @@ export function AppShellPage() {
           ) : null}
 
           {!loadingUser && activeItem === 'Cierres de turno' ? renderShiftClosings() : null}
+          {!loadingUser && activeItem === 'Equipo' ? renderTeam() : null}
           {!loadingUser && activeItem === 'Waitlist' ? renderWaitlist() : null}
 
           {!loadingUser &&
           activeItem !== 'Dashboard' &&
           activeItem !== 'Cierres de turno' &&
+          activeItem !== 'Equipo' &&
           activeItem !== 'Waitlist' ? (
             <p>
               Módulo <strong>{activeItem}</strong> visible en el shell. Se implementa funcionalidad en los

@@ -79,6 +79,50 @@ export async function getWaitlist({ token }: { token: string }) {
   })
 }
 
+export type BusinessMember = {
+  id: string
+  name: string
+  email: string
+  role: 'OWNER' | 'ADMIN' | 'MANAGER' | 'STAFF'
+  locationId: string | null
+  locationName: string | null
+}
+
+export async function getBusinessMembers({
+  token,
+  businessId,
+}: {
+  token: string
+  businessId: string
+}) {
+  return request<{ items: BusinessMember[] }>(`/businesses/${businessId}/members`, {
+    method: 'GET',
+    token,
+  })
+}
+
+export async function createBusinessMember({
+  token,
+  businessId,
+  payload,
+}: {
+  token: string
+  businessId: string
+  payload: {
+    name: string
+    email: string
+    password: string
+    role: 'ADMIN' | 'MANAGER' | 'STAFF'
+    locationId?: string | null
+  }
+}) {
+  return request<{ member: BusinessMember }>(`/businesses/${businessId}/members`, {
+    method: 'POST',
+    token,
+    body: payload,
+  })
+}
+
 export type ShiftClosingLine = {
   id: string
   channel: 'PISO' | 'RAPPI' | 'UBER_EATS' | 'DIDI_FOOD' | 'EVENTO' | 'OTRO'

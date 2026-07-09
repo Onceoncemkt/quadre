@@ -364,6 +364,10 @@ body {
   margin-top: 16px;
 }
 
+.q-team-form {
+  margin-top: 16px;
+}
+
 .q-close-form-header {
   display: flex;
   justify-content: space-between;
