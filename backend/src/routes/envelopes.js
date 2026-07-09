@@ -23,6 +23,19 @@ const createDepositSchema = z.object({
   note: z.string().optional(),
 });
 
+const withdrawEnvelopeSchema = z.object({
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  amount: z.coerce.number().positive(),
+  reason: z.string().trim().min(1),
+});
+
+const transferEnvelopeSchema = z.object({
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  toEnvelopeId: z.string().trim().min(1),
+  amount: z.coerce.number().positive(),
+  note: z.string().optional(),
+});
+
 const payEnvelopeSchema = z.object({
   locationId: z.string().trim().min(1),
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
@@ -60,6 +73,49 @@ function getNextDueDate({ today, frequency, dueDay, dueDate }) {
 function getDaysDiff(fromDate, toDate) {
   const msPerDay = 24 * 60 * 60 * 1000;
   return Math.max(1, Math.ceil((toDate.getTime() - fromDate.getTime()) / msPerDay));
+}
+
+function getEnvelopeSavedAmount(envelope) {
+  return Number(
+    (envelope.deposits || [])
+      .filter((deposit) => !envelope.lastPaidAt || deposit.date.getTime() > envelope.lastPaidAt.getTime())
+      .reduce((sum, deposit) => sum + Number(deposit.amount || 0), 0)
+      .toFixed(2),
+  );
+}
+
+function parseMovementFromDeposit(deposit) {
+  const rawNote = (deposit.note || '').trim();
+  const amount = Number(deposit.amount || 0);
+
+  if (rawNote.startsWith('WITHDRAW:')) {
+    return {
+      type: 'WITHDRAW',
+      note: null,
+      reason: rawNote.slice('WITHDRAW:'.length).trim(),
+    };
+  }
+  if (rawNote.startsWith('TRANSFER_OUT:')) {
+    const [, targetEnvelopeId = '', transferNote = ''] = rawNote.split(':');
+    return {
+      type: 'TRANSFER_OUT',
+      note: transferNote.trim() || `A sobre ${targetEnvelopeId}`,
+      reason: null,
+    };
+  }
+  if (rawNote.startsWith('TRANSFER_IN:')) {
+    const [, sourceEnvelopeId = '', transferNote = ''] = rawNote.split(':');
+    return {
+      type: 'TRANSFER_IN',
+      note: transferNote.trim() || `Desde sobre ${sourceEnvelopeId}`,
+      reason: null,
+    };
+  }
+  return {
+    type: amount < 0 ? 'WITHDRAW' : 'DEPOSIT',
+    note: rawNote || null,
+    reason: null,
+  };
 }
 
 async function getMembershipByBusinessId({ userId, businessId }) {
@@ -165,12 +221,7 @@ envelopesRouter.get(
       });
 
       const items = envelopes.map((envelope) => {
-        const saved = Number(
-          envelope.deposits
-            .filter((deposit) => !envelope.lastPaidAt || deposit.date.getTime() > envelope.lastPaidAt.getTime())
-            .reduce((sum, deposit) => sum + Number(deposit.amount || 0), 0)
-            .toFixed(2),
-        );
+        const saved = getEnvelopeSavedAmount(envelope);
         const nextDueDate = getNextDueDate({
           today,
           frequency: envelope.frequency,
@@ -272,6 +323,185 @@ envelopesRouter.post('/envelopes/:id/deposits', authMiddleware, async (req, res,
       },
     });
     res.status(201).json({ ok: true, deposit });
+  } catch (error) {
+    next(error);
+  }
+});
+
+envelopesRouter.post('/envelopes/:id/withdraw', authMiddleware, async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const parsed = withdrawEnvelopeSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ ok: false, error: 'Payload inválido', details: parsed.error.flatten() });
+      return;
+    }
+
+    const { envelope, membership } = await getEnvelopeAndMembership({ userId: req.userId, envelopeId: id });
+    if (!envelope || !envelope.active) {
+      res.status(404).json({ ok: false, error: 'Sobre no encontrado' });
+      return;
+    }
+    if (!membership || !managerRoles.includes(membership.role)) {
+      res.status(403).json({ ok: false, error: 'No autorizado para retirar de este sobre' });
+      return;
+    }
+
+    const date = parsed.data.date ? parseDateOnly(parsed.data.date) : parseDateOnly(getMexicoTodayString());
+    if (!date) {
+      res.status(400).json({ ok: false, error: 'Fecha inválida' });
+      return;
+    }
+
+    const envelopeWithDeposits = await prisma.envelope.findUnique({
+      where: { id },
+      include: { deposits: { orderBy: { date: 'asc' } } },
+    });
+    if (!envelopeWithDeposits) {
+      res.status(404).json({ ok: false, error: 'Sobre no encontrado' });
+      return;
+    }
+
+    const available = getEnvelopeSavedAmount(envelopeWithDeposits);
+    const withdrawAmount = Number(parsed.data.amount.toFixed(2));
+    if (withdrawAmount > available) {
+      res.status(400).json({ ok: false, error: 'Saldo insuficiente en el sobre' });
+      return;
+    }
+
+    const deposit = await prisma.envelopeDeposit.create({
+      data: {
+        envelopeId: id,
+        date,
+        amount: Number((withdrawAmount * -1).toFixed(2)),
+        note: `WITHDRAW:${parsed.data.reason.trim()}`,
+      },
+    });
+
+    res.status(201).json({ ok: true, movement: deposit });
+  } catch (error) {
+    next(error);
+  }
+});
+
+envelopesRouter.post('/envelopes/:id/transfer', authMiddleware, async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const parsed = transferEnvelopeSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ ok: false, error: 'Payload inválido', details: parsed.error.flatten() });
+      return;
+    }
+
+    if (parsed.data.toEnvelopeId === id) {
+      res.status(400).json({ ok: false, error: 'El sobre destino debe ser distinto' });
+      return;
+    }
+
+    const { envelope, membership } = await getEnvelopeAndMembership({ userId: req.userId, envelopeId: id });
+    if (!envelope || !envelope.active) {
+      res.status(404).json({ ok: false, error: 'Sobre origen no encontrado' });
+      return;
+    }
+    if (!membership || !managerRoles.includes(membership.role)) {
+      res.status(403).json({ ok: false, error: 'No autorizado para transferir entre sobres' });
+      return;
+    }
+
+    const targetEnvelope = await prisma.envelope.findUnique({
+      where: { id: parsed.data.toEnvelopeId },
+      select: { id: true, businessId: true, active: true },
+    });
+    if (!targetEnvelope || !targetEnvelope.active || targetEnvelope.businessId !== envelope.businessId) {
+      res.status(400).json({ ok: false, error: 'Sobre destino inválido para este negocio' });
+      return;
+    }
+
+    const transferDate = parsed.data.date ? parseDateOnly(parsed.data.date) : parseDateOnly(getMexicoTodayString());
+    if (!transferDate) {
+      res.status(400).json({ ok: false, error: 'Fecha inválida' });
+      return;
+    }
+
+    const sourceEnvelopeWithDeposits = await prisma.envelope.findUnique({
+      where: { id },
+      include: { deposits: { orderBy: { date: 'asc' } } },
+    });
+    if (!sourceEnvelopeWithDeposits) {
+      res.status(404).json({ ok: false, error: 'Sobre origen no encontrado' });
+      return;
+    }
+
+    const available = getEnvelopeSavedAmount(sourceEnvelopeWithDeposits);
+    const transferAmount = Number(parsed.data.amount.toFixed(2));
+    if (transferAmount > available) {
+      res.status(400).json({ ok: false, error: 'Saldo insuficiente en el sobre origen' });
+      return;
+    }
+
+    const transferNote = (parsed.data.note || '').trim();
+
+    const result = await prisma.$transaction(async (tx) => {
+      const out = await tx.envelopeDeposit.create({
+        data: {
+          envelopeId: id,
+          date: transferDate,
+          amount: Number((transferAmount * -1).toFixed(2)),
+          note: `TRANSFER_OUT:${targetEnvelope.id}:${transferNote}`,
+        },
+      });
+
+      const incoming = await tx.envelopeDeposit.create({
+        data: {
+          envelopeId: targetEnvelope.id,
+          date: transferDate,
+          amount: transferAmount,
+          note: `TRANSFER_IN:${id}:${transferNote}`,
+        },
+      });
+
+      return { out, incoming };
+    });
+
+    res.status(201).json({ ok: true, movementOut: result.out, movementIn: result.incoming });
+  } catch (error) {
+    next(error);
+  }
+});
+
+envelopesRouter.get('/envelopes/:id/movements', authMiddleware, async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { envelope, membership } = await getEnvelopeAndMembership({ userId: req.userId, envelopeId: id });
+    if (!envelope || !envelope.active) {
+      res.status(404).json({ ok: false, error: 'Sobre no encontrado' });
+      return;
+    }
+    if (!membership) {
+      res.status(403).json({ ok: false, error: 'No autorizado para ver movimientos de este sobre' });
+      return;
+    }
+
+    const deposits = await prisma.envelopeDeposit.findMany({
+      where: { envelopeId: id },
+      orderBy: [{ date: 'desc' }, { createdAt: 'desc' }],
+    });
+
+    const items = deposits.map((deposit) => {
+      const movement = parseMovementFromDeposit(deposit);
+      return {
+        id: deposit.id,
+        envelopeId: deposit.envelopeId,
+        date: deposit.date,
+        amount: deposit.amount,
+        type: movement.type,
+        note: movement.note,
+        reason: movement.reason,
+        createdAt: deposit.createdAt,
+      };
+    });
+
+    res.status(200).json({ ok: true, items });
   } catch (error) {
     next(error);
   }
