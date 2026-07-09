@@ -7,6 +7,7 @@ const { meRouter } = require('./routes/me');
 const { shiftClosingsRouter } = require('./routes/shiftClosings');
 const { businessMembersRouter } = require('./routes/businessMembers');
 const { dashboardSummaryRouter } = require('./routes/dashboardSummary');
+const { requisitionsRouter } = require('./routes/requisitions');
 
 const app = express();
 
@@ -44,6 +45,7 @@ app.use(meRouter);
 app.use(shiftClosingsRouter);
 app.use(businessMembersRouter);
 app.use(dashboardSummaryRouter);
+app.use(requisitionsRouter);
 
 app.use((err, _req, res, _next) => {
   if (err && err.message === 'CORS origin no permitido') {
