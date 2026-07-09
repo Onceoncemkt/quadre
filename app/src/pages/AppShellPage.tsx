@@ -115,6 +115,7 @@ export function AppShellPage() {
   const [selectedBusinessId, setSelectedBusinessId] = useState('')
   const [selectedLocationId, setSelectedLocationId] = useState('')
   const [activeItem, setActiveItem] = useState('Dashboard')
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false)
 
   const [closings, setClosings] = useState<ShiftClosingItem[]>([])
   const [loadingClosings, setLoadingClosings] = useState(false)
@@ -186,6 +187,15 @@ export function AppShellPage() {
 
   const closingTotals = useMemo(() => getTotals(closeDraft), [closeDraft])
 
+  useEffect(() => {
+    if (!isMobileMenuOpen) return
+    const originalOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => {
+      document.body.style.overflow = originalOverflow
+    }
+  }, [isMobileMenuOpen])
+
   async function refreshShiftClosings() {
     if (!selectedLocationId || !token) return
     const now = new Date()
@@ -198,6 +208,62 @@ export function AppShellPage() {
     })
     setClosings(response.items)
   }
+
+  function handleSelectNavItem(item: string) {
+    setActiveItem(item)
+    setIsMobileMenuOpen(false)
+  }
+
+  const renderSidebarContent = () => (
+    <>
+      <div className="q-sidebar-logo">
+        <img src="/logo.png" alt="Quadre" />
+      </div>
+
+      <div className="q-selector-block">
+        <label>
+          Negocio
+          <select value={selectedBusinessId} onChange={(event) => setSelectedBusinessId(event.target.value)}>
+            {memberships.map((membership) => (
+              <option key={membership.business.id} value={membership.business.id}>
+                {membership.business.name}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label>
+          Sucursal
+          <select value={selectedLocationId} onChange={(event) => setSelectedLocationId(event.target.value)}>
+            {(selectedBusiness?.locations || []).map((location) => (
+              <option key={location.id} value={location.id}>
+                {location.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+
+      {navGroups.map((group) => (
+        <section className="q-nav-group" key={group.title}>
+          <h4>{group.title}</h4>
+          <ul className="q-nav-list">
+            {group.items.map((item) => (
+              <li key={item}>
+                <button
+                  className={`q-nav-item ${activeItem === item ? 'active' : ''}`}
+                  type="button"
+                  onClick={() => handleSelectNavItem(item)}
+                >
+                  {item}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ))}
+    </>
+  )
 
   function updateShiftLine(index: number, next: Partial<ShiftLineDraft>) {
     setCloseDraft((prev) => {
@@ -572,67 +638,40 @@ export function AppShellPage() {
   return (
     <>
       <header className="q-topbar">
-        <img src="/logo.png" alt="Quadre" />
+        <div className="q-topbar-left">
+          <button
+            type="button"
+            className="q-topbar-menu-btn"
+            onClick={() => setIsMobileMenuOpen(true)}
+            aria-label="Abrir menú"
+          >
+            ☰
+          </button>
+          <img src="/logo.png" alt="Quadre" />
+        </div>
         <button className="q-btn" type="button" onClick={logout} style={{ width: 'auto' }}>
           Salir
         </button>
       </header>
 
+      <div
+        className={`q-drawer-overlay ${isMobileMenuOpen ? 'open' : ''}`}
+        onClick={() => setIsMobileMenuOpen(false)}
+      />
+      <aside className={`q-mobile-drawer ${isMobileMenuOpen ? 'open' : ''}`} aria-hidden={!isMobileMenuOpen}>
+        <button
+          type="button"
+          className="q-drawer-close-btn"
+          onClick={() => setIsMobileMenuOpen(false)}
+          aria-label="Cerrar menú"
+        >
+          ✕
+        </button>
+        {renderSidebarContent()}
+      </aside>
+
       <main className="q-app-shell">
-        <aside className="q-sidebar">
-          <div className="q-sidebar-logo">
-            <img src="/logo.png" alt="Quadre" />
-          </div>
-
-          <div className="q-selector-block">
-            <label>
-              Negocio
-              <select
-                value={selectedBusinessId}
-                onChange={(event) => setSelectedBusinessId(event.target.value)}
-              >
-                {memberships.map((membership) => (
-                  <option key={membership.business.id} value={membership.business.id}>
-                    {membership.business.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <label>
-              Sucursal
-              <select
-                value={selectedLocationId}
-                onChange={(event) => setSelectedLocationId(event.target.value)}
-              >
-                {(selectedBusiness?.locations || []).map((location) => (
-                  <option key={location.id} value={location.id}>
-                    {location.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
-
-          {navGroups.map((group) => (
-            <section className="q-nav-group" key={group.title}>
-              <h4>{group.title}</h4>
-              <ul className="q-nav-list">
-                {group.items.map((item) => (
-                  <li key={item}>
-                    <button
-                      className={`q-nav-item ${activeItem === item ? 'active' : ''}`}
-                      type="button"
-                      onClick={() => setActiveItem(item)}
-                    >
-                      {item}
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            </section>
-          ))}
-        </aside>
+        <aside className="q-sidebar">{renderSidebarContent()}</aside>
 
         <section className="q-main">
           {loadingUser ? <p>Cargando sesión...</p> : null}

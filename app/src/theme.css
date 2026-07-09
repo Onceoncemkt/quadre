@@ -503,10 +503,35 @@ body {
   justify-content: space-between;
   padding: 12px 16px;
 }
+.q-topbar-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.q-topbar-menu-btn {
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  background: transparent;
+  color: white;
+  border-radius: 8px;
+  width: 38px;
+  height: 38px;
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
 
 .q-topbar img {
   height: 28px;
   width: auto;
+}
+
+.q-drawer-overlay,
+.q-mobile-drawer {
+  display: none;
 }
 
 @media (max-width: 960px) {
@@ -520,6 +545,59 @@ body {
 
   .q-sidebar {
     display: none;
+  }
+
+  .q-drawer-overlay {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 180ms ease;
+    z-index: 25;
+  }
+
+  .q-drawer-overlay.open {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .q-mobile-drawer {
+    display: block;
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 290px;
+    height: 100vh;
+    background: var(--tinta);
+    color: white;
+    padding: 20px 18px;
+    transform: translateX(-100%);
+    transition: transform 180ms ease;
+    z-index: 30;
+    overflow-y: auto;
+  }
+
+  .q-mobile-drawer.open {
+    transform: translateX(0);
+  }
+
+  .q-drawer-close-btn {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    border: none;
+    background: transparent;
+    color: white;
+    font-size: 24px;
+    line-height: 1;
+    cursor: pointer;
+    width: 36px;
+    height: 36px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
   }
 
   .q-section-header {
