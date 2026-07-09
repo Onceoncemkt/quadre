@@ -255,6 +255,13 @@ body {
   background: #ecf2f5;
 }
 
+.q-chip-btn-link {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+  color: var(--tinta2);
+}
+
 .q-btn-inline {
   width: auto;
 }
@@ -311,6 +318,10 @@ body {
 .q-table-turn span {
   color: var(--gris);
   font-size: 13px;
+}
+
+.q-table-muted {
+  color: var(--gris);
 }
 
 .q-chip {

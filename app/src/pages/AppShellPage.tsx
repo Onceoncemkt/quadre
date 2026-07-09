@@ -1,6 +1,12 @@
 import type { FormEvent } from 'react'
 import { useEffect, useMemo, useState } from 'react'
-import { createShiftClosing, getShiftClosings, type ShiftClosingItem } from '../lib/api'
+import {
+  createShiftClosing,
+  getShiftClosings,
+  getWaitlist,
+  type ShiftClosingItem,
+  type WaitlistLead,
+} from '../lib/api'
 import { useAuth } from '../state/auth'
 
 const navGroups = [
@@ -11,6 +17,10 @@ const navGroups = [
   {
     title: 'Dinero',
     items: ['Proveedores y adeudos', 'Nómina', 'Gastos', 'P&L y reportes'],
+  },
+  {
+    title: 'Quadre HQ',
+    items: ['Waitlist'],
   },
 ]
 
@@ -93,11 +103,29 @@ function formatMoney(value: number) {
 function formatShiftType(type: string) {
   return type.charAt(0) + type.slice(1).toLowerCase()
 }
-function formatShiftDate(dateValue: string) {
+function formatDateFromIsoString(dateValue: string) {
   const dateOnly = dateValue.slice(0, 10)
   const [year, month, day] = dateOnly.split('-')
   if (!year || !month || !day) return dateValue
   return `${day}/${month}/${year}`
+}
+function sanitizeDigits(value: string) {
+  return value.replace(/\D/g, '')
+}
+
+function getFirstName(name: string) {
+  const [firstName] = name.trim().split(/\s+/)
+  return firstName || 'hola'
+}
+
+function buildWhatsappUrl(lead: WaitlistLead) {
+  if (!lead.whatsapp) return null
+  const digits = sanitizeDigits(lead.whatsapp)
+  if (!digits) return null
+  const message = `¡Hola ${getFirstName(
+    lead.name,
+  )}! Soy María, fundadora de Quadre 👋 Vi que te registraste en la lista de espera...`
+  return `https://wa.me/52${digits}?text=${encodeURIComponent(message)}`
 }
 
 function getTotals(draft: ClosingDraft) {
@@ -124,6 +152,9 @@ export function AppShellPage() {
   const [showCloseForm, setShowCloseForm] = useState(false)
   const [savingClose, setSavingClose] = useState(false)
   const [closeError, setCloseError] = useState('')
+  const [waitlistLeads, setWaitlistLeads] = useState<WaitlistLead[]>([])
+  const [loadingWaitlist, setLoadingWaitlist] = useState(false)
+  const [waitlistError, setWaitlistError] = useState('')
   const [closeDraft, setCloseDraft] = useState<ClosingDraft>({
     date: getTodayDateInput(),
     type: 'UNICO',
@@ -180,6 +211,19 @@ export function AppShellPage() {
       })
       .finally(() => setLoadingClosings(false))
   }, [activeItem, closingsRange, selectedLocationId, token])
+
+  useEffect(() => {
+    if (activeItem !== 'Waitlist' || !token) return
+    setLoadingWaitlist(true)
+    setWaitlistError('')
+    getWaitlist({ token })
+      .then((response) => setWaitlistLeads(response.items))
+      .catch((error) => {
+        setWaitlistLeads([])
+        setWaitlistError(error instanceof Error ? error.message : 'No se pudo cargar la waitlist')
+      })
+      .finally(() => setLoadingWaitlist(false))
+  }, [activeItem, token])
 
   const selectedLocationName = useMemo(() => {
     return selectedBusiness?.locations.find((location) => location.id === selectedLocationId)?.name || ''
@@ -611,7 +655,7 @@ export function AppShellPage() {
                   <tr key={item.id}>
                     <td>
                       <div className="q-table-turn">
-                        <strong>{formatShiftDate(item.shift.date)}</strong>
+                        <strong>{formatDateFromIsoString(item.shift.date)}</strong>
                         <span>
                           {formatShiftType(item.shift.type)} · {selectedLocationName || 'Sucursal'}
                         </span>
@@ -624,6 +668,82 @@ export function AppShellPage() {
                       <span className={`q-chip ${difference >= 0 ? 'ok' : 'falt'}`}>
                         {difference >= 0 ? '✓ Cuadró' : `Faltante −${formatMoney(Math.abs(difference))}`}
                       </span>
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+    </section>
+  )
+
+  const renderWaitlist = () => (
+    <section className="q-shift-closings">
+      <header className="q-section-header">
+        <div>
+          <h1>Waitlist</h1>
+          <p>{waitlistLeads.length} registrados</p>
+        </div>
+      </header>
+
+      {loadingWaitlist ? <p>Cargando waitlist...</p> : null}
+      {waitlistError ? <p className="q-error-text">{waitlistError}</p> : null}
+
+      {!loadingWaitlist && !waitlistError && !waitlistLeads.length ? (
+        <section className="q-card q-empty-state">
+          <h3>Aún no hay registros en la waitlist</h3>
+          <p>Cuando lleguen desde la landing aparecerán aquí.</p>
+        </section>
+      ) : null}
+
+      {!loadingWaitlist && !waitlistError && waitlistLeads.length ? (
+        <div className="q-table-wrap">
+          <table className="q-table">
+            <thead>
+              <tr>
+                <th>Nombre</th>
+                <th>Contacto</th>
+                <th>Fuente</th>
+                <th>Registro</th>
+                <th>Acción</th>
+              </tr>
+            </thead>
+            <tbody>
+              {waitlistLeads.map((lead) => {
+                const whatsappUrl = buildWhatsappUrl(lead)
+                return (
+                  <tr key={lead.id}>
+                    <td>
+                      <div className="q-table-turn">
+                        <strong>{lead.name}</strong>
+                        <span>
+                          {lead.businessName || '—'} · {lead.businessType || '—'}
+                        </span>
+                      </div>
+                    </td>
+                    <td>
+                      <div className="q-table-turn">
+                        <strong>{lead.email}</strong>
+                        <span>{lead.whatsapp || 'Sin WhatsApp'}</span>
+                      </div>
+                    </td>
+                    <td>{lead.source || 'direct'}</td>
+                    <td>{formatDateFromIsoString(lead.createdAt)}</td>
+                    <td>
+                      {whatsappUrl ? (
+                        <a
+                          className="q-chip-btn q-chip-btn-link"
+                          href={whatsappUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          WhatsApp
+                        </a>
+                      ) : (
+                        <span className="q-table-muted">—</span>
+                      )}
                     </td>
                   </tr>
                 )
@@ -703,8 +823,12 @@ export function AppShellPage() {
           ) : null}
 
           {!loadingUser && activeItem === 'Cierres de turno' ? renderShiftClosings() : null}
+          {!loadingUser && activeItem === 'Waitlist' ? renderWaitlist() : null}
 
-          {!loadingUser && activeItem !== 'Dashboard' && activeItem !== 'Cierres de turno' ? (
+          {!loadingUser &&
+          activeItem !== 'Dashboard' &&
+          activeItem !== 'Cierres de turno' &&
+          activeItem !== 'Waitlist' ? (
             <p>
               Módulo <strong>{activeItem}</strong> visible en el shell. Se implementa funcionalidad en los
               siguientes bloques.

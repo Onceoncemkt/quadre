@@ -61,6 +61,24 @@ export async function me(token: string) {
   })
 }
 
+export type WaitlistLead = {
+  id: string
+  name: string
+  email: string
+  whatsapp: string | null
+  businessName: string | null
+  businessType: string | null
+  source: string | null
+  createdAt: string
+}
+
+export async function getWaitlist({ token }: { token: string }) {
+  return request<{ items: WaitlistLead[] }>('/waitlist', {
+    method: 'GET',
+    token,
+  })
+}
+
 export type ShiftClosingLine = {
   id: string
   channel: 'PISO' | 'RAPPI' | 'UBER_EATS' | 'DIDI_FOOD' | 'EVENTO' | 'OTRO'
