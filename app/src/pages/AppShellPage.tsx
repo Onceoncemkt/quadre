@@ -201,6 +201,12 @@ type PayablePaymentDraft = {
   categoryId: string
 }
 
+type PayableCounterpartyDraft = {
+  name: string
+  type: 'SUPPLIER' | 'LENDER'
+  phone: string
+}
+
 const requisitionFilterOptions: Array<{ key: RequisitionsFilter; label: string }> = [
   { key: 'ACTIVE', label: 'Activas' },
   { key: 'RECEIVED', label: 'Recibidas' },
@@ -456,6 +462,7 @@ export function AppShellPage() {
   const [payablesSuccess, setPayablesSuccess] = useState('')
   const [savingPayables, setSavingPayables] = useState(false)
   const [showPayableForm, setShowPayableForm] = useState(false)
+  const [showInlinePayableCounterpartyForm, setShowInlinePayableCounterpartyForm] = useState(false)
   const [expandedCounterpartyId, setExpandedCounterpartyId] = useState('')
   const [activePayPurchaseId, setActivePayPurchaseId] = useState('')
   const [purchasePaymentsByPurchase, setPurchasePaymentsByPurchase] = useState<
@@ -519,6 +526,11 @@ export function AppShellPage() {
   const [payablePaymentDraftByPurchase, setPayablePaymentDraftByPurchase] = useState<
     Record<string, PayablePaymentDraft>
   >({})
+  const [payableCounterpartyDraft, setPayableCounterpartyDraft] = useState<PayableCounterpartyDraft>({
+    name: '',
+    type: 'SUPPLIER',
+    phone: '',
+  })
   const [requisitions, setRequisitions] = useState<RequisitionItem[]>([])
   const [loadingRequisitions, setLoadingRequisitions] = useState(false)
   const [requisitionsError, setRequisitionsError] = useState('')
@@ -1045,6 +1057,40 @@ export function AppShellPage() {
       resetPayableCreateDraft()
     } catch (error) {
       setPayablesError(error instanceof Error ? error.message : 'No se pudo registrar el adeudo')
+    } finally {
+      setSavingPayables(false)
+    }
+  }
+
+  async function handleCreateInlinePayableCounterparty() {
+    if (!token || !selectedBusinessId) return
+    if (!payableCounterpartyDraft.name.trim()) {
+      setPayablesError('Nombre de acreedor es obligatorio')
+      return
+    }
+    setSavingPayables(true)
+    setPayablesError('')
+    try {
+      const response = await createBusinessCounterparty({
+        token,
+        businessId: selectedBusinessId,
+        payload: {
+          name: payableCounterpartyDraft.name.trim(),
+          type: payableCounterpartyDraft.type,
+          phone: payableCounterpartyDraft.phone.trim() || undefined,
+        },
+      })
+      const counterpartiesResponse = await getBusinessCounterparties({
+        token,
+        businessId: selectedBusinessId,
+      })
+      setCounterparties(counterpartiesResponse.counterparties || [])
+      setPayableCreateDraft((prev) => ({ ...prev, counterpartyId: response.counterparty.id }))
+      setPayableCounterpartyDraft({ name: '', type: 'SUPPLIER', phone: '' })
+      setShowInlinePayableCounterpartyForm(false)
+      setPayablesSuccess('Acreedor creado ✓')
+    } catch (error) {
+      setPayablesError(error instanceof Error ? error.message : 'No se pudo crear el acreedor')
     } finally {
       setSavingPayables(false)
     }
@@ -3149,6 +3195,13 @@ export function AppShellPage() {
                   </option>
                 ))}
               </select>
+              <button
+                type="button"
+                className="q-link-btn"
+                onClick={() => setShowInlinePayableCounterpartyForm((prev) => !prev)}
+              >
+                {showInlinePayableCounterpartyForm ? 'Cerrar alta rápida' : 'Nuevo acreedor'}
+              </button>
             </label>
             <label className="q-field">
               Tipo
@@ -3232,6 +3285,57 @@ export function AppShellPage() {
           <button className="q-btn q-btn-inline" type="submit" disabled={savingPayables}>
             {savingPayables ? 'Guardando...' : 'Guardar adeudo'}
           </button>
+
+          {showInlinePayableCounterpartyForm ? (
+            <div className="q-payable-inline-counterparty-form">
+              <div className="q-field-grid-3">
+                <label className="q-field">
+                  Nombre
+                  <input
+                    type="text"
+                    value={payableCounterpartyDraft.name}
+                    onChange={(event) =>
+                      setPayableCounterpartyDraft((prev) => ({ ...prev, name: event.target.value }))
+                    }
+                    required
+                  />
+                </label>
+                <label className="q-field">
+                  Tipo
+                  <select
+                    value={payableCounterpartyDraft.type}
+                    onChange={(event) =>
+                      setPayableCounterpartyDraft((prev) => ({
+                        ...prev,
+                        type: event.target.value as PayableCounterpartyDraft['type'],
+                      }))
+                    }
+                  >
+                    <option value="SUPPLIER">Proveedor</option>
+                    <option value="LENDER">Prestamista</option>
+                  </select>
+                </label>
+                <label className="q-field">
+                  Teléfono (opcional)
+                  <input
+                    type="text"
+                    value={payableCounterpartyDraft.phone}
+                    onChange={(event) =>
+                      setPayableCounterpartyDraft((prev) => ({ ...prev, phone: event.target.value }))
+                    }
+                  />
+                </label>
+              </div>
+              <button
+                className="q-btn q-btn-inline"
+                type="button"
+                disabled={savingPayables}
+                onClick={() => handleCreateInlinePayableCounterparty()}
+              >
+                {savingPayables ? 'Guardando...' : 'Crear acreedor'}
+              </button>
+            </div>
+          ) : null}
         </form>
       ) : null}
 

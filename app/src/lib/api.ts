@@ -258,6 +258,7 @@ export async function createBusinessCounterparty({
   businessId: string
   payload: {
     name: string
+    type?: 'SUPPLIER' | 'LENDER'
     phone?: string
     paymentTerms?: string
     notes?: string

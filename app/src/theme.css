@@ -453,6 +453,14 @@ body {
   gap: 12px;
 }
 
+.q-payable-inline-counterparty-form {
+  border: 1px dashed var(--linea);
+  border-radius: 12px;
+  padding: 10px;
+  display: grid;
+  gap: 10px;
+}
+
 .q-payables-grid {
   margin-top: 16px;
   display: grid;
