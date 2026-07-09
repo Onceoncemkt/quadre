@@ -79,7 +79,7 @@ dashboardSummaryRouter.get('/locations/:locationId/dashboard-summary', authMiddl
       return;
     }
 
-    const todayString = new Date().toISOString().slice(0, 10);
+    const todayString = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Mexico_City' });
     const todayStart = parseDateOnly(todayString);
     if (!todayStart) {
       res.status(500).json({ ok: false, error: 'No se pudo calcular el día actual' });
