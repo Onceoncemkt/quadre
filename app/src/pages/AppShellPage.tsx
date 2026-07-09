@@ -110,9 +110,37 @@ export function AppShellPage() {
 
         <section className="q-main">
           {loadingUser ? <p>Cargando sesión...</p> : null}
-          {!loadingUser ? (
+          {!loadingUser && activeItem === 'Dashboard' ? (
+            <section className="q-dashboard">
+              <h1>Hola, {user?.name || 'equipo'}.</h1>
+              <p>
+                Este dashboard queda listo para conectar cierres, gastos y P&L en el siguiente sprint.
+              </p>
+              <div className="q-cards">
+                <article className="q-card">
+                  <h3>Ventas netas hoy</h3>
+                  <div className="value q-mono">$0.00</div>
+                </article>
+                <article className="q-card">
+                  <h3>Faltantes del día</h3>
+                  <div className="value q-mono">$0.00</div>
+                </article>
+                <article className="q-card">
+                  <h3>Gasto operativo</h3>
+                  <div className="value q-mono">$0.00</div>
+                </article>
+                <article className="q-card">
+                  <h3>Utilidad estimada</h3>
+                  <div className="value q-mono">$0.00</div>
+                </article>
+              </div>
+            </section>
+          ) : null}
+
+          {!loadingUser && activeItem !== 'Dashboard' ? (
             <p>
-              Hola, {user?.name || 'equipo'}. Módulo <strong>{activeItem}</strong> visible en el shell.
+              Módulo <strong>{activeItem}</strong> visible en el shell. Se implementa funcionalidad en los
+              siguientes bloques.
             </p>
           ) : null}
         </section>

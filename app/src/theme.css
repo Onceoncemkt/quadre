@@ -204,6 +204,43 @@ body {
   background: var(--papel);
   padding: 24px;
 }
+.q-dashboard h1 {
+  margin: 0;
+  font-size: clamp(26px, 4vw, 36px);
+  font-variation-settings: 'wdth' 115;
+}
+
+.q-dashboard p {
+  margin: 8px 0 0;
+  color: var(--gris);
+}
+
+.q-cards {
+  margin-top: 20px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.q-card {
+  border: 1px solid var(--linea);
+  border-radius: 14px;
+  background: var(--blanco);
+  padding: 16px;
+}
+
+.q-card h3 {
+  margin: 0 0 10px;
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--tinta2);
+}
+
+.q-card .value {
+  font-size: 28px;
+  color: var(--tinta);
+}
 
 
 .q-topbar {
