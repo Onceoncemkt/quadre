@@ -47,7 +47,12 @@ const css = `
   font-variation-settings:'wdth' 118;font-weight:900;
   font-size:clamp(38px,6vw,58px);line-height:1.04;letter-spacing:-.025em;
 }
-.q-h1 em{font-style:normal;color:var(--verde);}
+css.q-h1 em{
+  font-style:normal;color:var(--tinta);
+  background:linear-gradient(transparent 8%, var(--cuadro) 8%, var(--cuadro) 94%, transparent 94%);
+  padding:0 .14em;border-radius:.08em;
+  -webkit-box-decoration-break:clone;box-decoration-break:clone;
+}
 .q-hero p{font-size:18px;color:var(--gris);margin:22px 0 30px;max-width:480px;}
 .q-trust{font-family:'Spline Sans Mono',monospace;font-size:12.5px;color:var(--gris);margin-top:16px;letter-spacing:.04em;}
 
@@ -307,7 +312,7 @@ function App() {
       <div className="q-wrap">
         <nav className="q-nav">
           <div className="q-logo">
-            <img src="/logo.png" alt="Quadre" style={{height:44}} />
+            <img src="/logo.png" alt="Quadre" style={{height:38, width:'auto'}} />
           </div>
           <a className="q-btn" href="#waitlist">Unirme a la lista</a>
         </nav>
