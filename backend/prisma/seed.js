@@ -85,6 +85,31 @@ async function main() {
     locationName: 'Donde Siempre',
   });
 
+  const businesses = await prisma.business.findMany({
+    select: { id: true },
+  });
+
+  await Promise.all(
+    businesses.map((business) =>
+      prisma.expenseCategory.upsert({
+        where: {
+          businessId_name: {
+            businessId: business.id,
+            name: 'Insumos',
+          },
+        },
+        update: {
+          kind: 'COSTO_VENTA',
+        },
+        create: {
+          businessId: business.id,
+          name: 'Insumos',
+          kind: 'COSTO_VENTA',
+        },
+      }),
+    ),
+  );
+
   // eslint-disable-next-line no-console
   console.log('Seed completado. Recuerda cambiar la contraseña temporal de maria@quadre.mx');
 }
