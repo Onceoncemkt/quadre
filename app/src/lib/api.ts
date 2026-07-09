@@ -79,6 +79,31 @@ export async function getWaitlist({ token }: { token: string }) {
   })
 }
 
+export type DashboardSummary = {
+  hoy: {
+    ventasNetas: number
+    faltantes: number
+  }
+  mes: {
+    ventasNetas: number
+    faltantes: number
+    cierres: number
+  }
+}
+
+export async function getDashboardSummary({
+  token,
+  locationId,
+}: {
+  token: string
+  locationId: string
+}) {
+  return request<DashboardSummary>(`/locations/${locationId}/dashboard-summary`, {
+    method: 'GET',
+    token,
+  })
+}
+
 export type BusinessMember = {
   id: string
   name: string

@@ -3,10 +3,12 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   createBusinessMember,
   createShiftClosing,
+  getDashboardSummary,
   getBusinessMembers,
   getShiftClosings,
   getWaitlist,
   type BusinessMember,
+  type DashboardSummary,
   type ShiftClosingItem,
   type WaitlistLead,
 } from '../lib/api'
@@ -174,6 +176,9 @@ export function AppShellPage() {
   const [showAddMemberForm, setShowAddMemberForm] = useState(false)
   const [savingMember, setSavingMember] = useState(false)
   const [addMemberError, setAddMemberError] = useState('')
+  const [dashboardSummary, setDashboardSummary] = useState<DashboardSummary | null>(null)
+  const [loadingDashboard, setLoadingDashboard] = useState(false)
+  const [dashboardError, setDashboardError] = useState('')
   const [memberForm, setMemberForm] = useState({
     name: '',
     email: '',
@@ -255,6 +260,22 @@ export function AppShellPage() {
       })
       .finally(() => setLoadingWaitlist(false))
   }, [activeItem, token, user?.isSuperAdmin])
+
+  useEffect(() => {
+    if (!token || !selectedLocationId) return
+    setLoadingDashboard(true)
+    setDashboardError('')
+    getDashboardSummary({
+      token,
+      locationId: selectedLocationId,
+    })
+      .then((response) => setDashboardSummary(response))
+      .catch((error) => {
+        setDashboardSummary(null)
+        setDashboardError(error instanceof Error ? error.message : 'No se pudo cargar el dashboard')
+      })
+      .finally(() => setLoadingDashboard(false))
+  }, [selectedLocationId, token])
   useEffect(() => {
     if (activeItem !== 'Equipo' || !token || !selectedBusinessId || !canManageTeam) return
     setLoadingTeam(true)
@@ -1031,27 +1052,46 @@ export function AppShellPage() {
           {!loadingUser && activeItem === 'Dashboard' ? (
             <section className="q-dashboard">
               <h1>Hola, {user?.name || 'equipo'}.</h1>
-              <p>
-                Este dashboard queda listo para conectar cierres, gastos y P&L en el siguiente sprint.
-              </p>
-              <div className="q-cards">
-                <article className="q-card">
-                  <h3>Ventas netas hoy</h3>
-                  <div className="value q-mono">$0.00</div>
-                </article>
-                <article className="q-card">
-                  <h3>Faltantes del día</h3>
-                  <div className="value q-mono">$0.00</div>
-                </article>
-                <article className="q-card">
-                  <h3>Gasto operativo</h3>
-                  <div className="value q-mono">$0.00</div>
-                </article>
-                <article className="q-card">
-                  <h3>Utilidad estimada</h3>
-                  <div className="value q-mono">$0.00</div>
-                </article>
-              </div>
+              {loadingDashboard ? <p>Cargando dashboard...</p> : null}
+              {!loadingDashboard && dashboardError ? <p className="q-error-text">{dashboardError}</p> : null}
+              {!loadingDashboard && !dashboardError && dashboardSummary?.mes.cierres === 0 ? (
+                <section className="q-card q-empty-state">
+                  <h3>Sin cierres todavía</h3>
+                  <p>Cierra tu primer turno para empezar a ver métricas.</p>
+                  <button className="q-link-btn" type="button" onClick={() => setActiveItem('Cierres de turno')}>
+                    Ir a Cierres
+                  </button>
+                </section>
+              ) : null}
+              {!loadingDashboard && !dashboardError && dashboardSummary ? (
+                <div className="q-cards">
+                  <article className="q-card">
+                    <h3>Ventas netas hoy</h3>
+                    <div className="value q-mono">{formatMoney(dashboardSummary.hoy.ventasNetas)}</div>
+                  </article>
+                  <article className="q-card">
+                    <h3>Faltantes del día</h3>
+                    <div
+                      className={`value q-mono ${
+                        dashboardSummary.hoy.faltantes < 0 ? 'q-value-negative' : ''
+                      }`}
+                    >
+                      {formatMoney(dashboardSummary.hoy.faltantes)}
+                    </div>
+                    <span className={`q-chip ${dashboardSummary.hoy.faltantes < 0 ? 'falt' : 'ok'}`}>
+                      {dashboardSummary.hoy.faltantes < 0 ? 'Faltante' : 'Sin faltantes'}
+                    </span>
+                  </article>
+                  <article className="q-card">
+                    <h3>Ventas del mes</h3>
+                    <div className="value q-mono">{formatMoney(dashboardSummary.mes.ventasNetas)}</div>
+                  </article>
+                  <article className="q-card">
+                    <h3>Cierres del mes</h3>
+                    <div className="value q-mono">{dashboardSummary.mes.cierres}</div>
+                  </article>
+                </div>
+              ) : null}
             </section>
           ) : null}
 

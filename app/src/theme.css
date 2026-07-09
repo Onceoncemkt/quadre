@@ -510,6 +510,10 @@ body {
   color: var(--tinta);
 }
 
+.q-card .q-value-negative {
+  color: var(--falt);
+}
+
 .q-topbar {
   display: none;
   background: var(--tinta);
