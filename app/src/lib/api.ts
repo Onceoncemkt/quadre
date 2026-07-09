@@ -40,6 +40,179 @@ export async function register(input: {
   })
 }
 
+export type BusinessItem = {
+  id: string
+  businessId: string
+  name: string
+  unit: 'PZA' | 'KG' | 'G' | 'LT' | 'ML' | 'CAJA' | 'PAQUETE' | 'BOTELLA'
+  category: string | null
+  lastPrice: string | null
+  active: boolean
+}
+
+export type Counterparty = {
+  id: string
+  businessId: string
+  name: string
+  type: 'SUPPLIER' | 'LENDER'
+  phone: string | null
+  active: boolean
+}
+
+export type RequisitionStatus =
+  | 'DRAFT'
+  | 'PENDING_APPROVAL'
+  | 'APPROVED'
+  | 'ORDERED'
+  | 'RECEIVED'
+  | 'CANCELLED'
+
+export type RequisitionLine = {
+  id: string
+  requisitionId: string
+  itemId: string
+  qty: string
+  unitPrice: string
+  receivedQty: string | null
+  actualPrice: string | null
+  item: BusinessItem
+}
+
+export type RequisitionItem = {
+  id: string
+  locationId: string
+  counterpartyId: string | null
+  folio: number
+  status: RequisitionStatus
+  requestedById: string | null
+  approvedById: string | null
+  estimatedTotal: string
+  receivedTotal: string | null
+  notes: string | null
+  lines: RequisitionLine[]
+  counterparty: Counterparty | null
+  requestedBy: { id: string; name: string } | null
+  approvedBy: { id: string; name: string } | null
+}
+
+export async function getBusinessItems({
+  token,
+  businessId,
+}: {
+  token: string
+  businessId: string
+}) {
+  return request<{ items: BusinessItem[] }>(`/businesses/${businessId}/items`, {
+    method: 'GET',
+    token,
+  })
+}
+
+export async function createBusinessItem({
+  token,
+  businessId,
+  payload,
+}: {
+  token: string
+  businessId: string
+  payload: {
+    name: string
+    unit: BusinessItem['unit']
+    category?: string
+    lastPrice?: number
+  }
+}) {
+  return request<{ item: BusinessItem }>(`/businesses/${businessId}/items`, {
+    method: 'POST',
+    token,
+    body: payload,
+  })
+}
+
+export async function getBusinessCounterparties({
+  token,
+  businessId,
+}: {
+  token: string
+  businessId: string
+}) {
+  return request<{ counterparties: Counterparty[] }>(`/businesses/${businessId}/counterparties`, {
+    method: 'GET',
+    token,
+  })
+}
+
+export async function getLocationRequisitions({
+  token,
+  locationId,
+  status,
+}: {
+  token: string
+  locationId: string
+  status?: RequisitionStatus
+}) {
+  const params = new URLSearchParams()
+  if (status) params.set('status', status)
+  const query = params.toString() ? `?${params.toString()}` : ''
+  return request<{ items: RequisitionItem[] }>(`/locations/${locationId}/requisitions${query}`, {
+    method: 'GET',
+    token,
+  })
+}
+
+export async function createRequisition({
+  token,
+  locationId,
+  payload,
+}: {
+  token: string
+  locationId: string
+  payload: {
+    counterpartyId?: string
+    notes?: string
+    lines: Array<{ itemId: string; qty: number; unitPrice?: number }>
+  }
+}) {
+  return request<{ requisition: RequisitionItem }>(`/locations/${locationId}/requisitions`, {
+    method: 'POST',
+    token,
+    body: payload,
+  })
+}
+
+export async function approveRequisition({ token, requisitionId }: { token: string; requisitionId: string }) {
+  return request<{ requisition: RequisitionItem }>(`/requisitions/${requisitionId}/approve`, {
+    method: 'POST',
+    token,
+  })
+}
+
+export async function cancelRequisition({ token, requisitionId }: { token: string; requisitionId: string }) {
+  return request<{ requisition: RequisitionItem }>(`/requisitions/${requisitionId}/cancel`, {
+    method: 'POST',
+    token,
+  })
+}
+
+export async function receiveRequisition({
+  token,
+  requisitionId,
+  payload,
+}: {
+  token: string
+  requisitionId: string
+  payload: {
+    counterpartyId?: string
+    lines: Array<{ lineId: string; receivedQty: number; actualPrice: number }>
+  }
+}) {
+  return request<{ requisition: RequisitionItem }>(`/requisitions/${requisitionId}/receive`, {
+    method: 'POST',
+    token,
+    body: payload,
+  })
+}
+
 export async function login(input: { email: string; password: string }) {
   return request<{
     token: string

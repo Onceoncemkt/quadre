@@ -272,6 +272,12 @@ body {
   font-weight: 700;
 }
 
+.q-success-text {
+  margin: 10px 0 0;
+  font-weight: 700;
+  color: #335e00;
+}
+
 .q-table-wrap {
   margin-top: 16px;
   border: 1px solid var(--linea);
@@ -341,6 +347,73 @@ body {
 .q-chip.falt {
   background: #fde9e6;
   color: var(--falt);
+}
+
+.q-chip.pending {
+  background: #eef2f6;
+  color: var(--tinta2);
+}
+
+.q-table-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.q-link-danger {
+  color: var(--falt);
+}
+
+.q-requisitions-filter-row {
+  margin-top: 14px;
+}
+
+.q-inline-quick-item {
+  border-style: dashed;
+  display: grid;
+  gap: 8px;
+}
+
+.q-inline-quick-item h4,
+.q-inline-quick-item p {
+  margin: 0;
+}
+
+.q-inline-quick-item-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  align-items: end;
+}
+
+.q-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: grid;
+  place-items: center;
+  z-index: 40;
+  padding: 16px;
+}
+
+.q-modal-card {
+  width: min(940px, 100%);
+  max-height: 90vh;
+  overflow: auto;
+  background: var(--blanco);
+  border: 1px solid var(--linea);
+  border-radius: 14px;
+  padding: 16px;
+}
+
+.q-modal-content {
+  display: grid;
+  gap: 12px;
+}
+
+.q-receive-total {
+  margin: 0;
+  font-weight: 700;
 }
 
 .q-empty-state {
@@ -627,6 +700,10 @@ body {
   .q-field-grid-2,
   .q-field-grid-3,
   .q-line-row {
+    grid-template-columns: 1fr;
+  }
+
+  .q-inline-quick-item-grid {
     grid-template-columns: 1fr;
   }
 
