@@ -4,6 +4,7 @@ const { healthRouter } = require('./routes/health');
 const { waitlistRouter } = require('./routes/waitlist');
 const { authRouter } = require('./routes/auth');
 const { meRouter } = require('./routes/me');
+const { shiftClosingsRouter } = require('./routes/shiftClosings');
 
 const app = express();
 
@@ -38,6 +39,7 @@ app.use(healthRouter);
 app.use(waitlistRouter);
 app.use('/auth', authRouter);
 app.use(meRouter);
+app.use(shiftClosingsRouter);
 
 app.use((err, _req, res, _next) => {
   if (err && err.message === 'CORS origin no permitido') {
