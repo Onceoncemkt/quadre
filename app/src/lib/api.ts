@@ -43,7 +43,7 @@ export async function register(input: {
 export async function login(input: { email: string; password: string }) {
   return request<{
     token: string
-    user: { id: string; name: string; email: string }
+    user: { id: string; name: string; email: string; isSuperAdmin: boolean }
     memberships: any[]
   }>('/auth/login', {
     method: 'POST',
@@ -53,7 +53,7 @@ export async function login(input: { email: string; password: string }) {
 
 export async function me(token: string) {
   return request<{
-    user: { id: string; name: string; email: string }
+    user: { id: string; name: string; email: string; isSuperAdmin: boolean }
     memberships: any[]
   }>('/me', {
     method: 'GET',

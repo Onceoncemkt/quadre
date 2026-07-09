@@ -6,6 +6,7 @@ export type MeUser = {
   id: string
   name: string
   email: string
+  isSuperAdmin: boolean
 }
 
 export type MeMembership = {

@@ -18,11 +18,11 @@ const navGroups = [
     title: 'Dinero',
     items: ['Proveedores y adeudos', 'Nómina', 'Gastos', 'P&L y reportes'],
   },
-  {
-    title: 'Quadre HQ',
-    items: ['Waitlist'],
-  },
 ]
+const superAdminGroup = {
+  title: 'Quadre HQ',
+  items: ['Waitlist'],
+}
 
 const shiftTypeOptions = ['MATUTINO', 'VESPERTINO', 'NOCTURNO', 'UNICO'] as const
 const lineChannels = ['PISO', 'RAPPI', 'UBER_EATS', 'DIDI_FOOD', 'EVENTO', 'OTRO'] as const
@@ -213,7 +213,7 @@ export function AppShellPage() {
   }, [activeItem, closingsRange, selectedLocationId, token])
 
   useEffect(() => {
-    if (activeItem !== 'Waitlist' || !token) return
+    if (activeItem !== 'Waitlist' || !token || !user?.isSuperAdmin) return
     setLoadingWaitlist(true)
     setWaitlistError('')
     getWaitlist({ token })
@@ -223,13 +223,23 @@ export function AppShellPage() {
         setWaitlistError(error instanceof Error ? error.message : 'No se pudo cargar la waitlist')
       })
       .finally(() => setLoadingWaitlist(false))
-  }, [activeItem, token])
+  }, [activeItem, token, user?.isSuperAdmin])
 
   const selectedLocationName = useMemo(() => {
     return selectedBusiness?.locations.find((location) => location.id === selectedLocationId)?.name || ''
   }, [selectedBusiness, selectedLocationId])
 
   const closingTotals = useMemo(() => getTotals(closeDraft), [closeDraft])
+  const visibleNavGroups = useMemo(() => {
+    if (user?.isSuperAdmin) return [...navGroups, superAdminGroup]
+    return navGroups
+  }, [user?.isSuperAdmin])
+
+  useEffect(() => {
+    if (!user?.isSuperAdmin && activeItem === 'Waitlist') {
+      setActiveItem('Dashboard')
+    }
+  }, [activeItem, user?.isSuperAdmin])
 
   useEffect(() => {
     if (!isMobileMenuOpen) return
@@ -288,7 +298,7 @@ export function AppShellPage() {
         </label>
       </div>
 
-      {navGroups.map((group) => (
+      {visibleNavGroups.map((group) => (
         <section className="q-nav-group" key={group.title}>
           <h4>{group.title}</h4>
           <ul className="q-nav-list">
