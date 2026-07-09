@@ -4,6 +4,14 @@ const { hashPassword } = require('../src/lib/auth');
 const { slugify } = require('../src/lib/slug');
 
 const prisma = new PrismaClient();
+const defaultExpenseCategories = [
+  { name: 'Insumos', kind: 'COSTO_VENTA' },
+  { name: 'Renta', kind: 'OPERATIVO' },
+  { name: 'Servicios', kind: 'OPERATIVO' },
+  { name: 'Sueldos', kind: 'OPERATIVO' },
+  { name: 'Comisiones', kind: 'FINANCIERO' },
+  { name: 'Otros gastos', kind: 'OPERATIVO' },
+];
 
 async function upsertBusinessForOwner({ userId, businessName, locationName }) {
   const slug = slugify(businessName);
@@ -90,23 +98,25 @@ async function main() {
   });
 
   await Promise.all(
-    businesses.map((business) =>
-      prisma.expenseCategory.upsert({
-        where: {
-          businessId_name: {
-            businessId: business.id,
-            name: 'Insumos',
+    businesses.flatMap((business) =>
+      defaultExpenseCategories.map((category) =>
+        prisma.expenseCategory.upsert({
+          where: {
+            businessId_name: {
+              businessId: business.id,
+              name: category.name,
+            },
           },
-        },
-        update: {
-          kind: 'COSTO_VENTA',
-        },
-        create: {
-          businessId: business.id,
-          name: 'Insumos',
-          kind: 'COSTO_VENTA',
-        },
-      }),
+          update: {
+            kind: category.kind,
+          },
+          create: {
+            businessId: business.id,
+            name: category.name,
+            kind: category.kind,
+          },
+        }),
+      ),
     ),
   );
 
