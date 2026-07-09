@@ -1,5 +1,232 @@
-import { useMemo, useState } from 'react'
-import type { FormEvent } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+
+// ============================================================
+// QUADRE — Landing de waitlist v2
+// Identidad: Tinta #101613 · Verde #0E8A57 · Cuadró #C1FF72
+// Papel #F7F7F2 · Faltante #E4573D
+// Tipos: Archivo (display) + Spline Sans Mono (dinero)
+// ============================================================
+
+const css = `
+@import url('https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=Spline+Sans+Mono:wght@400;500;700&display=swap');
+
+.q-root{
+  --tinta:#101613;--tinta2:#1A231E;--verde:#0E8A57;--verdeh:#0C744A;
+  --cuadro:#C1FF72;--papel:#F7F7F2;--blanco:#fff;--falt:#E4573D;
+  --gris:#5C6660;--linea:#E3E4DC;--lineaD:#2A342E;
+  background:var(--papel);color:var(--tinta);
+  font-family:'Archivo',sans-serif;font-size:17px;line-height:1.6;
+  -webkit-font-smoothing:antialiased;overflow-x:hidden;
+}
+.q-root *{margin:0;padding:0;box-sizing:border-box;}
+.q-mono{font-family:'Spline Sans Mono',monospace;font-variant-numeric:tabular-nums;}
+.q-wrap{max-width:1080px;margin:0 auto;padding:0 24px;}
+
+/* ---------- nav ---------- */
+.q-nav{display:flex;align-items:center;justify-content:space-between;padding:20px 0;}
+.q-logo{display:flex;align-items:center;gap:10px;}
+.q-logo svg{width:34px;height:34px;}
+.q-logo .w{font-variation-settings:'wdth' 118;font-weight:900;font-size:24px;letter-spacing:-.02em;}
+.q-btn{
+  display:inline-flex;align-items:center;gap:8px;background:var(--verde);color:#fff;
+  border:none;cursor:pointer;font-family:inherit;font-weight:700;font-size:15px;
+  padding:12px 22px;border-radius:10px;text-decoration:none;
+}
+.q-btn:hover{background:var(--verdeh);}
+.q-btn.big{font-size:17px;padding:15px 28px;}
+.q-btn:disabled{opacity:.6;cursor:wait;}
+
+/* ---------- hero ---------- */
+.q-hero{display:grid;grid-template-columns:1.1fr .9fr;gap:48px;align-items:center;padding:56px 0 72px;}
+@media(max-width:880px){.q-hero{grid-template-columns:1fr;padding:32px 0 56px;}}
+.q-eyebrow{
+  font-family:'Spline Sans Mono',monospace;font-size:12px;font-weight:500;
+  letter-spacing:.2em;text-transform:uppercase;color:var(--verde);margin-bottom:16px;
+}
+.q-h1{
+  font-variation-settings:'wdth' 118;font-weight:900;
+  font-size:clamp(38px,6vw,58px);line-height:1.04;letter-spacing:-.025em;
+}
+.q-h1 em{font-style:normal;color:var(--verde);}
+.q-hero p{font-size:18px;color:var(--gris);margin:22px 0 30px;max-width:480px;}
+.q-trust{font-family:'Spline Sans Mono',monospace;font-size:12.5px;color:var(--gris);margin-top:16px;letter-spacing:.04em;}
+
+/* ---------- ticket ---------- */
+.q-ticket{
+  width:min(330px,100%);margin:0 auto;background:var(--tinta);color:var(--papel);
+  padding:26px 24px 30px;font-family:'Spline Sans Mono',monospace;font-size:13px;
+  font-variant-numeric:tabular-nums;line-height:1.5;
+  box-shadow:0 24px 60px rgba(16,22,19,.28);
+  --zz:10px;
+  clip-path:polygon(0% var(--zz),4% 0%,8% var(--zz),12% 0%,16% var(--zz),20% 0%,24% var(--zz),28% 0%,32% var(--zz),36% 0%,40% var(--zz),44% 0%,48% var(--zz),52% 0%,56% var(--zz),60% 0%,64% var(--zz),68% 0%,72% var(--zz),76% 0%,80% var(--zz),84% 0%,88% var(--zz),92% 0%,96% var(--zz),100% 0%,100% calc(100% - var(--zz)),96% 100%,92% calc(100% - var(--zz)),88% 100%,84% calc(100% - var(--zz)),80% 100%,76% calc(100% - var(--zz)),72% 100%,68% calc(100% - var(--zz)),64% 100%,60% calc(100% - var(--zz)),56% 100%,52% calc(100% - var(--zz)),48% 100%,44% calc(100% - var(--zz)),40% 100%,36% calc(100% - var(--zz)),32% 100%,28% calc(100% - var(--zz)),24% 100%,20% calc(100% - var(--zz)),16% 100%,12% calc(100% - var(--zz)),8% 100%,4% calc(100% - var(--zz)),0% 100%);
+}
+.q-ticket .c{text-align:center;}
+.q-ticket .marca{font-weight:700;letter-spacing:.26em;font-size:13.5px;margin-top:10px;}
+.q-ticket .sub{font-size:10.5px;color:#8C968F;letter-spacing:.12em;margin-top:3px;}
+.q-ticket .div{border-top:1px dashed #3A453F;margin:14px 0;}
+.q-ticket .f{display:flex;justify-content:space-between;gap:10px;padding:2.5px 0;}
+.q-ticket .f .l{color:#B7BFB9;}
+.q-ticket .tot{font-weight:700;}
+.q-falt{
+  margin-top:14px;border:1.5px dashed var(--falt);border-radius:6px;
+  padding:12px 10px;text-align:center;color:var(--falt);
+}
+.q-falt .s{font-weight:700;font-size:14px;letter-spacing:.1em;}
+.q-falt .m{font-weight:700;font-size:23px;margin-top:2px;}
+.q-falt .n{font-size:10px;color:#8C968F;margin-top:6px;letter-spacing:.05em;}
+.q-ticket .pie{margin-top:16px;text-align:center;font-size:10.5px;color:#5E6B64;letter-spacing:.12em;}
+.q-ticket .pie b{color:var(--cuadro);font-weight:700;}
+
+/* ---------- secciones ---------- */
+.q-perfora{border:none;border-top:2px dashed var(--linea);margin:0;}
+.q-sec{padding:72px 0;}
+.q-h2{
+  font-variation-settings:'wdth' 115;font-weight:800;
+  font-size:clamp(28px,4.4vw,40px);letter-spacing:-.02em;line-height:1.12;margin-bottom:14px;
+}
+.q-lead{font-size:18px;color:var(--gris);max-width:600px;}
+
+/* dolores como líneas de corte */
+.q-dolores{margin-top:36px;border-top:2px dashed var(--linea);}
+.q-dolor{
+  display:grid;grid-template-columns:auto 1fr auto;gap:20px;align-items:baseline;
+  padding:22px 4px;border-bottom:2px dashed var(--linea);
+}
+@media(max-width:680px){.q-dolor{grid-template-columns:auto 1fr;}}
+.q-dolor .num{font-family:'Spline Sans Mono',monospace;font-weight:700;color:var(--falt);font-size:15px;}
+.q-dolor h3{font-variation-settings:'wdth' 112;font-weight:800;font-size:20px;margin-bottom:4px;}
+.q-dolor p{color:var(--gris);font-size:15.5px;max-width:560px;}
+.q-dolor .tag{font-family:'Spline Sans Mono',monospace;font-size:12px;color:var(--falt);font-weight:700;white-space:nowrap;}
+@media(max-width:680px){.q-dolor .tag{display:none;}}
+
+/* módulos */
+.q-mods{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;margin-top:36px;}
+.q-mod{background:var(--blanco);border:1px solid var(--linea);border-radius:14px;padding:24px;}
+.q-mod .chip{
+  display:inline-block;font-family:'Spline Sans Mono',monospace;font-size:11px;font-weight:700;
+  letter-spacing:.1em;padding:4px 11px;border-radius:999px;margin-bottom:14px;
+  background:rgba(14,138,87,.09);color:var(--verde);
+}
+.q-mod h3{font-variation-settings:'wdth' 112;font-weight:800;font-size:19px;margin-bottom:8px;}
+.q-mod p{color:var(--gris);font-size:14.5px;}
+
+/* banda diferenciador */
+.q-dark{background:var(--tinta);color:var(--papel);}
+.q-dark .q-h2{color:var(--papel);}
+.q-dark .q-h2 em{font-style:normal;color:var(--cuadro);}
+.q-dark .q-lead{color:#9AA49D;}
+.q-cuadre{margin-top:34px;border-top:1px dashed var(--lineaD);max-width:640px;}
+.q-crow{
+  display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap;
+  padding:14px 0;border-bottom:1px dashed var(--lineaD);
+}
+.q-crow .who{font-weight:600;font-size:15px;}
+.q-crow .who span{display:block;font-family:'Spline Sans Mono',monospace;font-size:11.5px;color:#7B857E;font-weight:400;}
+.q-crow .amt{font-family:'Spline Sans Mono',monospace;font-size:15px;}
+.q-crow .st{font-family:'Spline Sans Mono',monospace;font-size:12.5px;font-weight:700;}
+.q-crow .st.ok{color:var(--cuadro);}
+.q-crow .st.bad{color:var(--falt);}
+
+/* founding */
+.q-found{display:grid;grid-template-columns:1fr 1fr;gap:44px;align-items:center;}
+@media(max-width:880px){.q-found{grid-template-columns:1fr;}}
+.q-benef{list-style:none;margin-top:24px;}
+.q-benef li{padding:9px 0 9px 32px;position:relative;color:var(--gris);font-size:16px;}
+.q-benef li::before{content:"✓";position:absolute;left:0;color:var(--verde);font-weight:800;}
+.q-benef li strong{color:var(--tinta);}
+.q-price{
+  background:var(--blanco);border:1px solid var(--linea);border-radius:18px;
+  padding:34px 32px;text-align:center;box-shadow:0 16px 44px rgba(16,22,19,.08);
+}
+.q-price .lab{
+  font-family:'Spline Sans Mono',monospace;font-size:11.5px;letter-spacing:.2em;
+  text-transform:uppercase;color:var(--verde);font-weight:700;
+}
+.q-price .old{
+  font-family:'Spline Sans Mono',monospace;color:var(--gris);
+  text-decoration:line-through;font-size:17px;margin-top:18px;
+}
+.q-price .now{
+  font-family:'Spline Sans Mono',monospace;font-variant-numeric:tabular-nums;
+  font-weight:700;font-size:52px;letter-spacing:-.02em;line-height:1;margin-top:2px;
+}
+.q-price .now small{font-size:17px;font-weight:500;color:var(--gris);letter-spacing:0;}
+.q-price .lock{font-size:14px;color:var(--gris);margin:10px 0 22px;}
+.q-price .cupo{
+  font-family:'Spline Sans Mono',monospace;font-size:12px;color:var(--falt);
+  font-weight:700;letter-spacing:.08em;margin-top:14px;
+}
+
+/* form */
+.q-form{max-width:640px;margin:36px auto 0;}
+.q-grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
+@media(max-width:640px){.q-grid2{grid-template-columns:1fr;}}
+.q-field{display:block;font-size:13.5px;font-weight:700;}
+.q-field input{
+  width:100%;margin-top:7px;background:var(--blanco);border:1px solid var(--linea);
+  border-radius:10px;padding:13px 14px;font-family:inherit;font-size:15.5px;color:var(--tinta);
+}
+.q-field input:focus{outline:2px solid var(--verde);outline-offset:1px;border-color:var(--verde);}
+.q-msg{margin-top:16px;font-size:15px;font-weight:600;text-align:center;}
+.q-msg.ok{color:var(--verde);}
+.q-msg.err{color:var(--falt);}
+
+/* faq */
+.q-faq{max-width:680px;margin-top:32px;}
+.q-faq details{border-bottom:2px dashed var(--linea);padding:18px 4px;}
+.q-faq summary{font-weight:700;font-size:17px;cursor:pointer;list-style:none;display:flex;justify-content:space-between;gap:12px;}
+.q-faq summary::after{content:"+";font-family:'Spline Sans Mono',monospace;color:var(--verde);font-weight:700;}
+.q-faq details[open] summary::after{content:"−";}
+.q-faq details p{color:var(--gris);font-size:15.5px;margin-top:10px;max-width:600px;}
+
+/* footer */
+.q-footer{
+  padding:36px 0 52px;border-top:2px dashed var(--linea);
+  display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;
+  font-family:'Spline Sans Mono',monospace;font-size:12.5px;color:var(--gris);
+}
+.q-footer b{color:var(--verde);}
+
+/* reveal */
+.q-rev{opacity:0;transform:translateY(16px);transition:opacity .6s ease,transform .6s ease;}
+.q-rev.in{opacity:1;transform:none;}
+@media (prefers-reduced-motion:reduce){.q-rev{opacity:1;transform:none;transition:none;}}
+`
+
+function LogoQ({ size = 34, ink = '#101613', check = '#0E8A57' }: { size?: number; ink?: string; check?: string }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 120 120" fill="none" xmlns="http://www.w3.org/2000/svg" aria-label="Quadre">
+      <circle cx="56" cy="52" r="38" stroke={ink} strokeWidth="13" />
+      <path d="M62 74 L78 92 L112 44" stroke={check} strokeWidth="14" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
+}
+
+function Ticket() {
+  return (
+    <div className="q-ticket" aria-hidden="true">
+      <div className="c">
+        <div className="marca">CORTE DE CAJA</div>
+        <div className="sub">TU BAR · TURNO VESPERTINO · HOY</div>
+      </div>
+      <div className="div" />
+      <div className="f"><span className="l">Efectivo</span><span>$6,420.00</span></div>
+      <div className="f"><span className="l">Tarjeta</span><span>$9,830.00</span></div>
+      <div className="f"><span className="l">Apps (neto)</span><span>$1,990.00</span></div>
+      <div className="f tot"><span>TOTAL</span><span>$18,240.00</span></div>
+      <div className="div" />
+      <div className="f"><span className="l">Esperado en caja</span><span>$7,920.00</span></div>
+      <div className="f"><span className="l">Contado en caja</span><span>$7,690.00</span></div>
+      <div className="q-falt">
+        <div className="s">✗ FALTANTE</div>
+        <div className="m">−$230.00</div>
+        <div className="n">RESPONSABLE: SIN ASIGNAR</div>
+      </div>
+      <div className="div" />
+      <div className="pie">ESTO PASA TODAS LAS SEMANAS.<br /><b>quadre.mx ✓</b></div>
+    </div>
+  )
+}
 
 function App() {
   const [formData, setFormData] = useState({
@@ -12,10 +239,7 @@ function App() {
   const [status, setStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle')
   const [message, setMessage] = useState('')
 
-  const waitlistEndpoint = useMemo(
-    () => import.meta.env.VITE_WAITLIST_ENDPOINT || '',
-    [],
-  )
+  const endpoint = useMemo(() => import.meta.env.VITE_WAITLIST_ENDPOINT || '', [])
   const source = useMemo(() => {
     const params = new URLSearchParams(window.location.search)
     const utmSource = params.get('utm_source')
@@ -26,241 +250,301 @@ function App() {
       .join('|')
   }, [])
 
+  useEffect(() => {
+    const els = document.querySelectorAll('.q-rev')
+    const obs = new IntersectionObserver(
+      (entries) =>
+        entries.forEach((e) => {
+          if (e.isIntersecting) {
+            e.target.classList.add('in')
+            obs.unobserve(e.target)
+          }
+        }),
+      { threshold: 0.12 },
+    )
+    els.forEach((el) => obs.observe(el))
+    return () => obs.disconnect()
+  }, [])
+
   function handleChange(field: keyof typeof formData, value: string) {
     setFormData((prev) => ({ ...prev, [field]: value }))
-    if (status !== 'idle') {
-      setStatus('idle')
-      setMessage('')
-    }
   }
 
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    setStatus('loading')
-    setMessage('')
-
-    if (!waitlistEndpoint) {
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    if (!endpoint) {
       setStatus('error')
-      setMessage('Falta configurar VITE_WAITLIST_ENDPOINT para recibir registros.')
+      setMessage('El formulario no está configurado todavía. Escríbenos a hola@quadre.mx')
       return
     }
-
+    setStatus('loading')
+    setMessage('')
     try {
-      const response = await fetch(waitlistEndpoint, {
+      const response = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ...formData,
-          source,
-        }),
+        body: JSON.stringify({ ...formData, source }),
       })
-      if (!response.ok) {
-        throw new Error('No se pudo enviar tu registro.')
-      }
+      if (!response.ok) throw new Error('request failed')
+      const data = await response.json()
       setStatus('success')
-      setMessage('Listo. Te agregamos a la lista de espera de Quadre.')
-      setFormData({
-        name: '',
-        businessName: '',
-        businessType: '',
-        email: '',
-        whatsapp: '',
-      })
+      setMessage(
+        data.idempotent
+          ? 'Ya estabas en la lista — tu lugar sigue apartado ✓'
+          : 'Listo, quedaste en la lista ✓ Te escribimos por WhatsApp antes del lanzamiento.',
+      )
+      setFormData({ name: '', businessName: '', businessType: '', email: '', whatsapp: '' })
     } catch {
       setStatus('error')
-      setMessage('Ocurrió un error enviando tu registro. Inténtalo de nuevo.')
+      setMessage('Algo falló al enviar. Intenta de nuevo o escríbenos a hola@quadre.mx')
     }
   }
 
   return (
-    <div className="min-h-screen bg-quadre-paper text-quadre-ink">
-      <header className="border-b border-quadre-ink/10 bg-quadre-ink text-white">
-        <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-5">
-          <p className="font-display text-2xl font-extrabold tracking-tight">quadre ✓</p>
-          <a
-            href="#waitlist"
-            className="rounded-full border border-quadre-reward/40 bg-quadre-reward px-4 py-2 text-sm font-bold text-quadre-ink transition hover:bg-quadre-reward/90"
-          >
-            Entrar a waitlist
-          </a>
-        </div>
-      </header>
+    <div className="q-root">
+      <style>{css}</style>
 
-      <main>
-        <section className="mx-auto grid max-w-6xl gap-10 px-6 py-14 md:grid-cols-[1.2fr_0.8fr] md:py-20">
+      <div className="q-wrap">
+        <nav className="q-nav">
+          <div className="q-logo">
+            <LogoQ />
+            <span className="w">quadre</span>
+          </div>
+          <a className="q-btn" href="#waitlist">Unirme a la lista</a>
+        </nav>
+
+        {/* ================= HERO ================= */}
+        <header className="q-hero">
           <div>
-            <p className="mb-4 inline-flex rounded-full border border-quadre-green/30 bg-quadre-green/10 px-3 py-1 font-mono text-xs font-semibold uppercase tracking-wider text-quadre-green">
-              Donde todo cuadra
+            <div className="q-eyebrow">Control de dinero para restaurantes y bares</div>
+            <h1 className="q-h1">La caja no se cuadra sola. <em>Cuádrala.</em></h1>
+            <p>
+              Cierres de turno con arqueo, requisiciones costeadas, adeudos con proveedores y nómina
+              desde tu checador. Quadre te dice cuánto ganaste de verdad — y quién responde cuando falta.
             </p>
-            <h1 className="font-display text-4xl font-black leading-tight tracking-tight md:text-6xl">
-              Control de dinero para restaurantes y bares, turno por turno.
-            </h1>
-            <p className="mt-5 max-w-2xl text-lg text-quadre-ink/80">
-              Quadre aterriza lo que no te dan los reportes diarios: arqueo físico por turno,
-              faltante/sobrante y responsable con nombre. Si hoy no estás seguro de dónde se va el
-              dinero, aquí empieza el orden.
-            </p>
-            <div className="mt-8 flex flex-wrap gap-3">
-              <span className="rounded-full border border-quadre-green/20 bg-white px-3 py-1 font-mono text-sm tabular-nums shadow-sm">
-                CUADRÓ ✓
-              </span>
-              <span className="rounded-full border border-quadre-danger/30 bg-white px-3 py-1 font-mono text-sm tabular-nums text-quadre-danger shadow-sm">
-                Faltante -$1,240
-              </span>
-              <span className="rounded-full border border-quadre-ink/20 bg-white px-3 py-1 font-mono text-sm tabular-nums shadow-sm">
-                Responsable: Caja noche
-              </span>
+            <a className="q-btn big" href="#waitlist">Quiero mi lugar de founding member</a>
+            <div className="q-trust">CONSTRUIDO POR OPERADORES · VALIDADO EN UN BAR Y UN RESTAURANTE REALES</div>
+          </div>
+          <Ticket />
+        </header>
+      </div>
+
+      <hr className="q-perfora" />
+
+      {/* ================= DOLORES ================= */}
+      <section className="q-sec">
+        <div className="q-wrap q-rev">
+          <div className="q-eyebrow">El agujero por donde se va tu utilidad</div>
+          <h2 className="q-h2">Tu punto de venta te dice cuánto vendiste.<br />Nadie te dice si el dinero llegó a la caja.</h2>
+          <div className="q-dolores">
+            <div className="q-dolor">
+              <span className="num q-mono">−$</span>
+              <div>
+                <h3>Faltantes sin responsable</h3>
+                <p>Cada corte "más o menos cuadra". Al mes son miles de pesos que nadie vio salir y nadie firmó.</p>
+              </div>
+              <span className="tag">TODAS LAS SEMANAS</span>
+            </div>
+            <div className="q-dolor">
+              <span className="num q-mono">+%</span>
+              <div>
+                <h3>Precios que suben callados</h3>
+                <p>El proveedor te sube el aguacate 18% y te enteras tres semanas después — si te enteras.</p>
+              </div>
+              <span className="tag">SIN AVISO</span>
+            </div>
+            <div className="q-dolor">
+              <span className="num q-mono">2AM</span>
+              <div>
+                <h3>La nómina en Excel de madrugada</h3>
+                <p>Descargar el checador, corregir horarios, calcular retardos y extras a mano. Cada quincena.</p>
+              </div>
+              <span className="tag">CADA QUINCENA</span>
             </div>
           </div>
+        </div>
+      </section>
 
-          <aside className="rounded-2xl border border-quadre-ink/10 bg-white p-6 shadow-ticket">
-            <p className="font-mono text-xs uppercase tracking-wider text-quadre-ink/60">
-              El cuadre de hoy
-            </p>
-            <div className="my-4 border-t border-dashed border-quadre-ink/15" />
-            <div className="space-y-3 font-mono text-sm tabular-nums">
-              <div className="flex justify-between">
-                <span>Efectivo contado</span>
-                <strong>$12,430</strong>
-              </div>
-              <div className="flex justify-between">
-                <span>Esperado sistema</span>
-                <strong>$13,100</strong>
-              </div>
-              <div className="flex justify-between text-quadre-danger">
-                <span>Faltante</span>
-                <strong>-$670</strong>
-              </div>
-              <div className="flex justify-between">
-                <span>Apps delivery (neto)</span>
-                <strong>$8,915</strong>
-              </div>
+      <hr className="q-perfora" />
+
+      {/* ================= MÓDULOS ================= */}
+      <section className="q-sec">
+        <div className="q-wrap q-rev">
+          <div className="q-eyebrow">Qué hace Quadre</div>
+          <h2 className="q-h2">Cinco módulos, una sola cadena de dinero</h2>
+          <p className="q-lead">Todo alimenta tu estado de resultados sin capturar nada dos veces.</p>
+          <div className="q-mods">
+            <div className="q-mod">
+              <span className="chip">CIERRES DE TURNO</span>
+              <h3>Arqueo con responsable</h3>
+              <p>Ventas por método y canal, efectivo esperado vs contado, evidencia en foto y nombre de quien cerró. Faltante detectado esa noche, no en el estado de cuenta.</p>
             </div>
-            <div className="my-4 border-t border-dashed border-quadre-ink/15" />
-            <p className="text-sm text-quadre-ink/70">
-              Cierres por turno con evidencia y trazabilidad para dueño y gerente.
-            </p>
-          </aside>
-        </section>
-
-        <section className="bg-white py-14 md:py-16">
-          <div className="mx-auto max-w-6xl px-6">
-            <h2 className="font-display text-3xl font-extrabold tracking-tight md:text-4xl">
-              Cinco módulos para que el dinero de verdad cuadre
-            </h2>
-            <div className="mt-8 grid gap-4 md:grid-cols-2 xl:grid-cols-5">
-              {[
-                'Cierres de turno con arqueo',
-                'Egresos + P&L automático',
-                'Proveedores, adeudos y pagos',
-                'Requisiciones costeadas',
-                'Nómina desde checador biométrico',
-              ].map((module) => (
-                <article
-                  key={module}
-                  className="rounded-xl border border-quadre-ink/10 bg-quadre-paper p-4 text-sm font-semibold"
-                >
-                  {module}
-                </article>
-              ))}
+            <div className="q-mod">
+              <span className="chip">P&amp;L AUTOMÁTICO</span>
+              <h3>Utilidad real, sin contador</h3>
+              <p>Ingresos netos (comisiones de apps ya descontadas), costos y gastos por sucursal. Sabes cuánto ganaste por día, turno y mes.</p>
+            </div>
+            <div className="q-mod">
+              <span className="chip">REQUISICIONES</span>
+              <h3>Pedidos costeados antes de gastar</h3>
+              <p>Tu equipo pide del catálogo con el último precio real. Apruebas sabiendo cuánto va a costar, y al recibir se compara contra lo cobrado.</p>
+            </div>
+            <div className="q-mod">
+              <span className="chip">PROVEEDORES Y ADEUDOS</span>
+              <h3>A quién le debes y para cuándo</h3>
+              <p>Saldos vivos, vencimientos, pagos parciales e historial de precios por insumo — con alerta cuando algo sube. Incluye préstamos de socios.</p>
+            </div>
+            <div className="q-mod">
+              <span className="chip">NÓMINA</span>
+              <h3>Del checador al pago en minutos</h3>
+              <p>Importa el archivo del biométrico y Quadre calcula días, retardos, extras y bonos con tus reglas. La quincena lista en minutos, no de madrugada.</p>
             </div>
           </div>
-        </section>
+        </div>
+      </section>
 
-        <section className="bg-quadre-ink py-14 text-white md:py-16">
-          <div className="mx-auto max-w-6xl px-6">
-            <h3 className="font-display text-3xl font-black tracking-tight md:text-4xl">
-              Diferenciador: cierre por turno, no solo corte diario
-            </h3>
-            <p className="mt-4 max-w-3xl text-white/80">
-              Cada turno termina con arqueo real, variación exacta y persona responsable.
-              Evitamos “doble captura” de dinero entre compras, requisiciones y nómina para que el
-              P&L se mantenga limpio desde la operación.
+      {/* ================= DIFERENCIADOR ================= */}
+      <section className="q-sec q-dark">
+        <div className="q-wrap q-rev">
+          <div className="q-eyebrow">Por qué Quadre y no otro sistema</div>
+          <h2 className="q-h2">Otros sistemas registran ventas por día.<br />Quadre cierra <em>por turno, con nombre</em>.</h2>
+          <p className="q-lead">
+            La diferencia entre "vendimos $19,390" y "faltaron $230 en el vespertino y lo cerró Heidy"
+            es la diferencia entre un reporte y el control real de tu negocio.
+          </p>
+          <div className="q-cuadre q-mono">
+            <div className="q-crow">
+              <div className="who">Matutino · Donde Siempre<span>Cerró Luisa C. · 4:12 pm</span></div>
+              <div className="amt">$8,340.00</div>
+              <div className="st ok">CUADRÓ ✓</div>
+            </div>
+            <div className="q-crow">
+              <div className="who">Matutino · Tulanyork<span>Cerró Xiomara V. · 4:35 pm</span></div>
+              <div className="amt">$11,020.00</div>
+              <div className="st ok">CUADRÓ ✓</div>
+            </div>
+            <div className="q-crow">
+              <div className="who">Vespertino · Tulanyork<span>Cerró Heidy T. · 11:58 pm</span></div>
+              <div className="amt">$19,390.00</div>
+              <div className="st bad">FALTANTE −$230.00</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* ================= FOUNDING ================= */}
+      <section className="q-sec">
+        <div className="q-wrap q-rev">
+          <div className="q-found">
+            <div>
+              <div className="q-eyebrow">Founding members</div>
+              <h2 className="q-h2">Precio bloqueado de por vida para los primeros 30</h2>
+              <ul className="q-benef">
+                <li><strong>$299/mes para siempre</strong> — aunque el precio público suba, el tuyo no.</li>
+                <li><strong>Onboarding personal por WhatsApp</strong> — te ayudamos a configurar tu operación.</li>
+                <li><strong>Voz directa en el producto</strong> — lo que te duela a ti se construye primero.</li>
+                <li><strong>Sin tarjeta hoy</strong> — apartas tu lugar y pagas hasta que Quadre esté en tus manos.</li>
+              </ul>
+            </div>
+            <div className="q-price">
+              <div className="lab">Precio Founding Member</div>
+              <div className="old q-mono">$499/mes</div>
+              <div className="now">$299<small>/mes MXN</small></div>
+              <div className="lock">Bloqueado de por vida · incluye 1 sucursal</div>
+              <a className="q-btn big" href="#waitlist">Apartar mi lugar</a>
+              <div className="cupo">SOLO 30 LUGARES · SE ASIGNAN EN ORDEN DE REGISTRO</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <hr className="q-perfora" />
+
+      {/* ================= FORM ================= */}
+      <section className="q-sec" id="waitlist">
+        <div className="q-wrap q-rev">
+          <div style={{ textAlign: 'center' }}>
+            <div className="q-eyebrow">Lista de espera</div>
+            <h2 className="q-h2">Aparta tu lugar</h2>
+            <p className="q-lead" style={{ margin: '0 auto' }}>
+              Sin costo y sin compromiso. Te contactamos por WhatsApp cuando abramos los primeros accesos.
             </p>
           </div>
-        </section>
-
-        <section id="waitlist" className="mx-auto max-w-4xl px-6 py-14 md:py-20">
-          <div className="rounded-2xl border border-quadre-ink/10 bg-white p-6 shadow-ticket md:p-8">
-            <h4 className="font-display text-3xl font-black tracking-tight">Entrar a la waitlist</h4>
-            <p className="mt-2 text-quadre-ink/70">
-              Abrimos lugares por bloques para implementación acompañada.
-            </p>
-
-            <form className="mt-7 grid gap-4 md:grid-cols-2" onSubmit={handleSubmit}>
-              <label className="text-sm font-semibold">
+          <form className="q-form" onSubmit={handleSubmit}>
+            <div className="q-grid2">
+              <label className="q-field">
                 Nombre
-                <input
-                  required
-                  value={formData.name}
-                  onChange={(e) => handleChange('name', e.target.value)}
-                  className="mt-2 w-full rounded-lg border border-quadre-ink/20 bg-white px-3 py-2 font-normal outline-none ring-quadre-green/30 focus:ring-2"
-                />
+                <input required value={formData.name} onChange={(e) => handleChange('name', e.target.value)} />
               </label>
-              <label className="text-sm font-semibold">
-                Negocio
-                <input
-                  required
-                  value={formData.businessName}
-                  onChange={(e) => handleChange('businessName', e.target.value)}
-                  className="mt-2 w-full rounded-lg border border-quadre-ink/20 bg-white px-3 py-2 font-normal outline-none ring-quadre-green/30 focus:ring-2"
-                />
+              <label className="q-field">
+                Nombre de tu negocio
+                <input required value={formData.businessName} onChange={(e) => handleChange('businessName', e.target.value)} />
               </label>
-              <label className="text-sm font-semibold">
+              <label className="q-field">
                 Tipo de negocio
                 <input
                   value={formData.businessType}
                   onChange={(e) => handleChange('businessType', e.target.value)}
-                  className="mt-2 w-full rounded-lg border border-quadre-ink/20 bg-white px-3 py-2 font-normal outline-none ring-quadre-green/30 focus:ring-2"
                   placeholder="Restaurante, bar, cafetería..."
                 />
               </label>
-              <label className="text-sm font-semibold">
+              <label className="q-field">
                 Email
-                <input
-                  type="email"
-                  required
-                  value={formData.email}
-                  onChange={(e) => handleChange('email', e.target.value)}
-                  className="mt-2 w-full rounded-lg border border-quadre-ink/20 bg-white px-3 py-2 font-normal outline-none ring-quadre-green/30 focus:ring-2"
-                />
+                <input type="email" required value={formData.email} onChange={(e) => handleChange('email', e.target.value)} />
               </label>
-              <label className="text-sm font-semibold">
+              <label className="q-field" style={{ gridColumn: '1 / -1' }}>
                 WhatsApp
                 <input
                   required
                   value={formData.whatsapp}
                   onChange={(e) => handleChange('whatsapp', e.target.value)}
-                  className="mt-2 w-full rounded-lg border border-quadre-ink/20 bg-white px-3 py-2 font-normal outline-none ring-quadre-green/30 focus:ring-2"
+                  placeholder="10 dígitos"
+                  inputMode="tel"
                 />
               </label>
-              <div className="md:col-span-2">
-                <button
-                  type="submit"
-                  disabled={status === 'loading'}
-                  className="w-full rounded-xl bg-quadre-green px-5 py-3 font-semibold text-white transition hover:bg-quadre-green/90 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {status === 'loading' ? 'Enviando...' : 'Quiero acceso anticipado'}
-                </button>
-                {message && (
-                  <p
-                    className={`mt-3 text-sm ${
-                      status === 'success' ? 'text-quadre-green' : 'text-quadre-danger'
-                    }`}
-                  >
-                    {message}
-                  </p>
-                )}
-              </div>
-            </form>
-          </div>
-        </section>
-      </main>
+            </div>
+            <div style={{ textAlign: 'center', marginTop: 22 }}>
+              <button className="q-btn big" type="submit" disabled={status === 'loading'}>
+                {status === 'loading' ? 'Enviando…' : 'Apartar mi lugar ✓'}
+              </button>
+            </div>
+            {message && <div className={`q-msg ${status === 'success' ? 'ok' : 'err'}`}>{message}</div>}
+          </form>
+        </div>
+      </section>
 
-      <footer className="border-t border-quadre-ink/10 bg-white py-6">
-        <div className="mx-auto flex max-w-6xl flex-col gap-2 px-6 text-sm text-quadre-ink/65 md:flex-row md:items-center md:justify-between">
-          <p>quadre.mx · Control de dinero para restaurantes y bares</p>
-          <p className="font-mono">Julio 2026</p>
+      <hr className="q-perfora" />
+
+      {/* ================= FAQ ================= */}
+      <section className="q-sec">
+        <div className="q-wrap q-rev">
+          <div className="q-eyebrow">Preguntas frecuentes</div>
+          <h2 className="q-h2">Lo que todos preguntan</h2>
+          <div className="q-faq">
+            <details>
+              <summary>¿Quadre reemplaza mi punto de venta?</summary>
+              <p>No, y esa es la idea: Quadre convive con el POS que ya usas. Tu POS cobra; Quadre controla el dinero — cierres, arqueos, adeudos, nómina y utilidad real.</p>
+            </details>
+            <details>
+              <summary>¿Necesito saber de contabilidad?</summary>
+              <p>Cero. Quadre habla como se habla en un restaurante: corte, arqueo, faltante, quincena. Si tu gerente sabe cerrar caja, sabe usar Quadre.</p>
+            </details>
+            <details>
+              <summary>¿Cuándo lanza?</summary>
+              <p>Los primeros accesos se abren en las próximas semanas, en orden de registro. Los founding members entran primero y con onboarding personal.</p>
+            </details>
+            <details>
+              <summary>¿Registrarme me compromete a pagar?</summary>
+              <p>No. Apartar tu lugar es gratis. El precio de founding member ($299/mes de por vida) solo aplica si decides entrar cuando te toque acceso.</p>
+            </details>
+          </div>
+        </div>
+      </section>
+
+      <footer className="q-footer">
+        <div className="q-wrap" style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10, padding: 0 }}>
+          <span>quadre.mx · hecho en Hidalgo, México</span>
+          <span>donde todo cuadra <b>✓</b></span>
         </div>
       </footer>
     </div>
