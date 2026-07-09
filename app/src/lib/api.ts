@@ -1,7 +1,7 @@
 const API_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:4000'
 
 type RequestOptions = {
-  method?: 'GET' | 'POST' | 'PATCH'
+  method?: 'GET' | 'POST' | 'PATCH' | 'DELETE'
   body?: unknown
   token?: string
 }
@@ -103,11 +103,14 @@ export type RequisitionItem = {
 export async function getBusinessItems({
   token,
   businessId,
+  all = false,
 }: {
   token: string
   businessId: string
+  all?: boolean
 }) {
-  return request<{ items: BusinessItem[] }>(`/businesses/${businessId}/items`, {
+  const query = all ? '?all=true' : ''
+  return request<{ items: BusinessItem[] }>(`/businesses/${businessId}/items${query}`, {
     method: 'GET',
     token,
   })
@@ -135,6 +138,24 @@ export async function createBusinessItem({
   })
 }
 
+export async function deleteBusinessItem({
+  token,
+  businessId,
+  itemId,
+}: {
+  token: string
+  businessId: string
+  itemId: string
+}) {
+  return request<{ deleted: boolean; deactivated: boolean; message: string }>(
+    `/businesses/${businessId}/items/${itemId}`,
+    {
+      method: 'DELETE',
+      token,
+    },
+  )
+}
+
 
 export async function patchBusinessItem({
   token,
@@ -151,6 +172,7 @@ export async function patchBusinessItem({
     category?: string | null
     lastPrice?: number | null
     defaultCounterpartyId?: string | null
+    active?: boolean
   }
 }) {
   return request<{ item: BusinessItem }>(`/businesses/${businessId}/items/${itemId}`, {
@@ -162,11 +184,14 @@ export async function patchBusinessItem({
 export async function getBusinessCounterparties({
   token,
   businessId,
+  all = false,
 }: {
   token: string
   businessId: string
+  all?: boolean
 }) {
-  return request<{ counterparties: Counterparty[] }>(`/businesses/${businessId}/counterparties`, {
+  const query = all ? '?all=true' : ''
+  return request<{ counterparties: Counterparty[] }>(`/businesses/${businessId}/counterparties${query}`, {
     method: 'GET',
     token,
   })
@@ -207,6 +232,7 @@ export async function patchBusinessCounterparty({
     phone?: string | null
     paymentTerms?: string | null
     notes?: string | null
+    active?: boolean
   }
 }) {
   return request<{ counterparty: Counterparty }>(
@@ -215,6 +241,24 @@ export async function patchBusinessCounterparty({
       method: 'PATCH',
       token,
       body: payload,
+    },
+  )
+}
+
+export async function deleteBusinessCounterparty({
+  token,
+  businessId,
+  counterpartyId,
+}: {
+  token: string
+  businessId: string
+  counterpartyId: string
+}) {
+  return request<{ deleted: boolean; deactivated: boolean; message: string }>(
+    `/businesses/${businessId}/counterparties/${counterpartyId}`,
+    {
+      method: 'DELETE',
+      token,
     },
   )
 }

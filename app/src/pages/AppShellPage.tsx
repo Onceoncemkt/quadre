@@ -8,6 +8,8 @@ import {
   createBusinessMember,
   createRequisition,
   createShiftClosing,
+  deleteBusinessCounterparty,
+  deleteBusinessItem,
   getBusinessCounterparties,
   getBusinessItems,
   getDashboardSummary,
@@ -302,6 +304,8 @@ export function AppShellPage() {
   const [requisitionFormError, setRequisitionFormError] = useState('')
   const [requisitionsSuccess, setRequisitionsSuccess] = useState('')
   const [rowActionLoadingId, setRowActionLoadingId] = useState('')
+  const [showInactiveItems, setShowInactiveItems] = useState(false)
+  const [showInactiveCounterparties, setShowInactiveCounterparties] = useState(false)
   const [quickItemDraft, setQuickItemDraft] = useState<QuickItemDraft>({
     name: '',
     unit: 'PZA',
@@ -459,6 +463,7 @@ export function AppShellPage() {
     if (activeItem !== 'Requisiciones' || !token || !selectedBusinessId || !selectedLocationId) return
     setLoadingRequisitions(true)
     setRequisitionsError('')
+    const loadCatalogAll = activeRequisitionsTab === 'CATALOG'
 
     const requisitionsPromise =
       requisitionsFilter === 'RECEIVED'
@@ -474,8 +479,16 @@ export function AppShellPage() {
 
     Promise.all([
       requisitionsPromise,
-      getBusinessItems({ token, businessId: selectedBusinessId }),
-      getBusinessCounterparties({ token, businessId: selectedBusinessId }),
+      getBusinessItems({
+        token,
+        businessId: selectedBusinessId,
+        all: loadCatalogAll && showInactiveItems,
+      }),
+      getBusinessCounterparties({
+        token,
+        businessId: selectedBusinessId,
+        all: loadCatalogAll && showInactiveCounterparties,
+      }),
     ])
       .then(([requisitionsResponse, itemsResponse, counterpartiesResponse]) => {
         const nextItems = itemsResponse.items || []
@@ -493,7 +506,16 @@ export function AppShellPage() {
         setRequisitionsError(error instanceof Error ? error.message : 'No se pudieron cargar las requisiciones')
       })
       .finally(() => setLoadingRequisitions(false))
-  }, [activeItem, requisitionsFilter, selectedBusinessId, selectedLocationId, token])
+  }, [
+    activeItem,
+    activeRequisitionsTab,
+    requisitionsFilter,
+    selectedBusinessId,
+    selectedLocationId,
+    showInactiveCounterparties,
+    showInactiveItems,
+    token,
+  ])
 
   useEffect(() => {
     if (newRequisitionDraft.counterpartyId) return
@@ -512,6 +534,14 @@ export function AppShellPage() {
   const selectedLocationName = useMemo(() => {
     return selectedBusiness?.locations.find((location) => location.id === selectedLocationId)?.name || ''
   }, [selectedBusiness, selectedLocationId])
+  const activeBusinessItems = useMemo(
+    () => businessItems.filter((item) => item.active),
+    [businessItems],
+  )
+  const activeCounterparties = useMemo(
+    () => counterparties.filter((counterparty) => counterparty.active),
+    [counterparties],
+  )
 
   const closingTotals = useMemo(() => getTotals(closeDraft), [closeDraft])
   const requisitionEstimatedTotal = useMemo(
@@ -586,8 +616,16 @@ export function AppShellPage() {
   async function refreshCatalogData() {
     if (!token || !selectedBusinessId) return
     const [itemsResponse, counterpartiesResponse] = await Promise.all([
-      getBusinessItems({ token, businessId: selectedBusinessId }),
-      getBusinessCounterparties({ token, businessId: selectedBusinessId }),
+      getBusinessItems({
+        token,
+        businessId: selectedBusinessId,
+        all: showInactiveItems,
+      }),
+      getBusinessCounterparties({
+        token,
+        businessId: selectedBusinessId,
+        all: showInactiveCounterparties,
+      }),
     ])
     setBusinessItems(itemsResponse.items || [])
     setCounterparties(counterpartiesResponse.counterparties || [])
@@ -931,6 +969,117 @@ export function AppShellPage() {
       setRequisitionsError(error instanceof Error ? error.message : 'No se pudo guardar el proveedor')
     } finally {
       setSavingCatalog(false)
+    }
+  }
+
+  async function handleDeleteCatalogItem(item: BusinessItem) {
+    if (!token || !selectedBusinessId) return
+    if (!window.confirm(`¿Eliminar ${item.name}?`)) return
+    setRowActionLoadingId(`item-delete-${item.id}`)
+    setRequisitionsError('')
+    setRequisitionsSuccess('')
+    try {
+      const response = await deleteBusinessItem({
+        token,
+        businessId: selectedBusinessId,
+        itemId: item.id,
+      })
+      await refreshCatalogData()
+      setRequisitionsSuccess(
+        response.deactivated
+          ? 'Se desactivó porque tiene historial — ya no aparecerá en nuevas requisiciones'
+          : 'Insumo eliminado ✓',
+      )
+      if (editingItemId === item.id) {
+        setEditingItemId('')
+        setCatalogItemDraft({
+          name: '',
+          unit: 'PZA',
+          category: '',
+          lastPrice: 0,
+          defaultCounterpartyId: '',
+        })
+      }
+    } catch (error) {
+      setRequisitionsError(error instanceof Error ? error.message : 'No se pudo eliminar el insumo')
+    } finally {
+      setRowActionLoadingId('')
+    }
+  }
+
+  async function handleReactivateCatalogItem(itemId: string) {
+    if (!token || !selectedBusinessId) return
+    setRowActionLoadingId(`item-reactivate-${itemId}`)
+    setRequisitionsError('')
+    setRequisitionsSuccess('')
+    try {
+      await patchBusinessItem({
+        token,
+        businessId: selectedBusinessId,
+        itemId,
+        payload: { active: true },
+      })
+      await refreshCatalogData()
+      setRequisitionsSuccess('Insumo reactivado ✓')
+    } catch (error) {
+      setRequisitionsError(error instanceof Error ? error.message : 'No se pudo reactivar el insumo')
+    } finally {
+      setRowActionLoadingId('')
+    }
+  }
+
+  async function handleDeleteCatalogCounterparty(counterparty: Counterparty) {
+    if (!token || !selectedBusinessId) return
+    if (!window.confirm(`¿Eliminar ${counterparty.name}?`)) return
+    setRowActionLoadingId(`counterparty-delete-${counterparty.id}`)
+    setRequisitionsError('')
+    setRequisitionsSuccess('')
+    try {
+      const response = await deleteBusinessCounterparty({
+        token,
+        businessId: selectedBusinessId,
+        counterpartyId: counterparty.id,
+      })
+      await refreshCatalogData()
+      setRequisitionsSuccess(
+        response.deactivated
+          ? 'Se desactivó porque tiene historial — ya no aparecerá en nuevas requisiciones'
+          : 'Proveedor eliminado ✓',
+      )
+      if (editingCounterpartyId === counterparty.id) {
+        setEditingCounterpartyId('')
+        setCatalogCounterpartyDraft({
+          name: '',
+          phone: '',
+          paymentTerms: '',
+          notes: '',
+        })
+      }
+    } catch (error) {
+      setRequisitionsError(error instanceof Error ? error.message : 'No se pudo eliminar el proveedor')
+    } finally {
+      setRowActionLoadingId('')
+    }
+  }
+
+  async function handleReactivateCatalogCounterparty(counterpartyId: string) {
+    if (!token || !selectedBusinessId) return
+    setRowActionLoadingId(`counterparty-reactivate-${counterpartyId}`)
+    setRequisitionsError('')
+    setRequisitionsSuccess('')
+    try {
+      await patchBusinessCounterparty({
+        token,
+        businessId: selectedBusinessId,
+        counterpartyId,
+        payload: { active: true },
+      })
+      await refreshCatalogData()
+      setRequisitionsSuccess('Proveedor reactivado ✓')
+    } catch (error) {
+      setRequisitionsError(error instanceof Error ? error.message : 'No se pudo reactivar el proveedor')
+    } finally {
+      setRowActionLoadingId('')
     }
   }
 
@@ -1467,7 +1616,7 @@ export function AppShellPage() {
                         }
                       >
                         <option value="">Sin asignar</option>
-                        {counterparties.map((counterparty) => (
+                        {activeCounterparties.map((counterparty) => (
                           <option key={counterparty.id} value={counterparty.id}>
                             {counterparty.name}
                           </option>
@@ -1488,7 +1637,7 @@ export function AppShellPage() {
                   </div>
 
                   <h3>Líneas</h3>
-                  {!businessItems.length ? (
+                  {!activeBusinessItems.length ? (
                     <article className="q-card q-inline-quick-item">
                       <h4>No hay insumos en catálogo</h4>
                       <p>Crea un insumo rápido para continuar sin salir del flujo.</p>
@@ -1551,7 +1700,7 @@ export function AppShellPage() {
                             value={line.itemId}
                             onChange={(event) => {
                               const itemId = event.target.value
-                              const selectedItem = businessItems.find((item) => item.id === itemId)
+                              const selectedItem = activeBusinessItems.find((item) => item.id === itemId)
                               updateRequisitionLine(index, {
                                 itemId,
                                 unitPrice: selectedItem ? asDecimal(selectedItem.lastPrice) : 0,
@@ -1559,7 +1708,7 @@ export function AppShellPage() {
                             }}
                           >
                             <option value="">Selecciona un insumo</option>
-                            {businessItems.map((item) => (
+                            {activeBusinessItems.map((item) => (
                               <option key={item.id} value={item.id}>
                                 {item.name} ({item.unit})
                               </option>
@@ -1603,12 +1752,12 @@ export function AppShellPage() {
                     type="button"
                     className="q-link-btn"
                     onClick={addRequisitionLine}
-                    disabled={!businessItems.length}
+                    disabled={!activeBusinessItems.length}
                   >
                     + Agregar línea
                   </button>
                   {requisitionFormError ? <p className="q-error-text">{requisitionFormError}</p> : null}
-                  <button className="q-btn q-btn-inline" type="submit" disabled={savingRequisition || !businessItems.length}>
+                  <button className="q-btn q-btn-inline" type="submit" disabled={savingRequisition || !activeBusinessItems.length}>
                     {savingRequisition ? 'Guardando...' : 'Crear requisición'}
                   </button>
                 </section>
@@ -1739,7 +1888,17 @@ export function AppShellPage() {
       ) : (
         <section className="q-catalog-grid">
           <article className="q-card">
-            <h3>Insumos</h3>
+            <div className="q-catalog-header">
+              <h3>Insumos</h3>
+              <label className="q-toggle-inline">
+                <input
+                  type="checkbox"
+                  checked={showInactiveItems}
+                  onChange={(event) => setShowInactiveItems(event.target.checked)}
+                />
+                Mostrar inactivos
+              </label>
+            </div>
             <div className="q-inline-quick-item-grid">
               <label className="q-field">
                 Nombre
@@ -1791,7 +1950,7 @@ export function AppShellPage() {
                   }
                 >
                   <option value="">Sin asignar</option>
-                  {counterparties.map((counterparty) => (
+                  {activeCounterparties.map((counterparty) => (
                     <option key={counterparty.id} value={counterparty.id}>
                       {counterparty.name}
                     </option>
@@ -1839,7 +1998,7 @@ export function AppShellPage() {
                 </thead>
                 <tbody>
                   {businessItems.map((item) => (
-                    <tr key={item.id}>
+                    <tr key={item.id} className={item.active ? '' : 'q-row-inactive'}>
                       <td>{item.name}</td>
                       <td>{item.unit}</td>
                       <td>{item.category || '—'}</td>
@@ -1862,6 +2021,25 @@ export function AppShellPage() {
                         >
                           Editar
                         </button>
+                        {item.active ? (
+                          <button
+                            type="button"
+                            className="q-link-btn q-link-danger"
+                            disabled={rowActionLoadingId === `item-delete-${item.id}`}
+                            onClick={() => handleDeleteCatalogItem(item)}
+                          >
+                            Eliminar
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            className="q-link-btn"
+                            disabled={rowActionLoadingId === `item-reactivate-${item.id}`}
+                            onClick={() => handleReactivateCatalogItem(item.id)}
+                          >
+                            Reactivar
+                          </button>
+                        )}
                       </td>
                     </tr>
                   ))}
@@ -1871,7 +2049,17 @@ export function AppShellPage() {
           </article>
 
           <article className="q-card">
-            <h3>Proveedores</h3>
+            <div className="q-catalog-header">
+              <h3>Proveedores</h3>
+              <label className="q-toggle-inline">
+                <input
+                  type="checkbox"
+                  checked={showInactiveCounterparties}
+                  onChange={(event) => setShowInactiveCounterparties(event.target.checked)}
+                />
+                Mostrar inactivos
+              </label>
+            </div>
             <div className="q-inline-quick-item-grid">
               <label className="q-field">
                 Nombre
@@ -1944,7 +2132,7 @@ export function AppShellPage() {
                 </thead>
                 <tbody>
                   {counterparties.map((counterparty) => (
-                    <tr key={counterparty.id}>
+                    <tr key={counterparty.id} className={counterparty.active ? '' : 'q-row-inactive'}>
                       <td>{counterparty.name}</td>
                       <td>{counterparty.phone || '—'}</td>
                       <td>
@@ -1963,6 +2151,25 @@ export function AppShellPage() {
                         >
                           Editar
                         </button>
+                        {counterparty.active ? (
+                          <button
+                            type="button"
+                            className="q-link-btn q-link-danger"
+                            disabled={rowActionLoadingId === `counterparty-delete-${counterparty.id}`}
+                            onClick={() => handleDeleteCatalogCounterparty(counterparty)}
+                          >
+                            Eliminar
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            className="q-link-btn"
+                            disabled={rowActionLoadingId === `counterparty-reactivate-${counterparty.id}`}
+                            onClick={() => handleReactivateCatalogCounterparty(counterparty.id)}
+                          >
+                            Reactivar
+                          </button>
+                        )}
                       </td>
                     </tr>
                   ))}
@@ -1998,7 +2205,7 @@ export function AppShellPage() {
                     required
                   >
                     <option value="">Selecciona proveedor</option>
-                    {counterparties.map((counterparty) => (
+                    {activeCounterparties.map((counterparty) => (
                       <option key={counterparty.id} value={counterparty.id}>
                         {counterparty.name}
                       </option>
