@@ -96,12 +96,15 @@ payablesRouter.get(
               name: true,
               type: true,
               phone: true,
+              paymentTerms: true,
+              notes: true,
               active: true,
             },
           },
         },
         orderBy: [{ dueDate: 'asc' }, { date: 'desc' }],
       });
+
 
       const byCounterparty = new Map();
       let totalPorPagar = 0;
@@ -123,6 +126,8 @@ payablesRouter.get(
             name: purchase.counterparty.name,
             type: purchase.counterparty.type,
             phone: purchase.counterparty.phone,
+            paymentTerms: purchase.counterparty.paymentTerms,
+            notes: purchase.counterparty.notes,
           },
           saldo: 0,
           purchases: [],
@@ -131,6 +136,7 @@ payablesRouter.get(
         existing.saldo = toMoney(existing.saldo + saldo);
         existing.purchases.push({
           id: purchase.id,
+          createdById: purchase.createdById || null,
           kind: purchase.kind,
           reference: purchase.reference,
           date: purchase.date,
@@ -141,6 +147,32 @@ payablesRouter.get(
         });
 
         byCounterparty.set(purchase.counterpartyId, existing);
+      });
+
+      const createdByIds = [
+        ...new Set(
+          purchases
+            .map((purchase) => purchase.createdById)
+            .filter((userId) => typeof userId === 'string' && userId.length),
+        ),
+      ];
+      const createdByUsers = createdByIds.length
+        ? await prisma.user.findMany({
+            where: { id: { in: createdByIds } },
+            select: { id: true, name: true },
+          })
+        : [];
+      const createdByMap = new Map(createdByUsers.map((user) => [user.id, user.name]));
+      Array.from(byCounterparty.values()).forEach((item) => {
+        item.purchases = item.purchases.map((purchase) => ({
+          ...purchase,
+          createdBy: purchase.createdById
+            ? {
+                id: purchase.createdById,
+                name: createdByMap.get(purchase.createdById) || 'Usuario',
+              }
+            : null,
+        }));
       });
 
       res.status(200).json({
@@ -158,7 +190,7 @@ payablesRouter.get(
 payablesRouter.post(
   '/businesses/:businessId/purchases',
   authMiddleware,
-  requireRole((req) => req.params.businessId, ownerAdminRoles),
+  requireRole((req) => req.params.businessId),
   async (req, res, next) => {
     try {
       const { businessId } = req.params;
@@ -199,6 +231,7 @@ payablesRouter.post(
         data: {
           counterpartyId: parsed.data.counterpartyId,
           locationId: parsed.data.locationId || null,
+          createdById: req.userId,
           kind: parsed.data.kind,
           reference: parsed.data.reference?.trim() || null,
           date,
@@ -231,7 +264,7 @@ payablesRouter.post('/purchases/:id/payments', authMiddleware, async (req, res, 
       res.status(404).json({ ok: false, error: 'Adeudo no encontrado' });
       return;
     }
-    if (!membership || !ownerAdminRoles.includes(membership.role)) {
+    if (!membership) {
       res.status(403).json({ ok: false, error: 'No autorizado para registrar pagos' });
       return;
     }
@@ -330,6 +363,7 @@ payablesRouter.post('/purchases/:id/payments', authMiddleware, async (req, res, 
           counterpartyId: purchase.counterpartyId,
           purchaseId: purchase.id,
           moneyAccountId,
+          createdById: req.userId,
           date: paymentDate,
           amount,
           method: parsed.data.method,
@@ -401,8 +435,31 @@ payablesRouter.get('/purchases/:id/payments', authMiddleware, async (req, res, n
       },
       orderBy: [{ date: 'desc' }, { createdAt: 'desc' }],
     });
+    const createdByIds = [
+      ...new Set(
+        items
+          .map((payment) => payment.createdById)
+          .filter((userId) => typeof userId === 'string' && userId.length),
+      ),
+    ];
+    const createdByUsers = createdByIds.length
+      ? await prisma.user.findMany({
+          where: { id: { in: createdByIds } },
+          select: { id: true, name: true },
+        })
+      : [];
+    const createdByMap = new Map(createdByUsers.map((user) => [user.id, user.name]));
+    const itemsWithCreatedBy = items.map((payment) => ({
+      ...payment,
+      createdBy: payment.createdById
+        ? {
+            id: payment.createdById,
+            name: createdByMap.get(payment.createdById) || 'Usuario',
+          }
+        : null,
+    }));
 
-    res.status(200).json({ ok: true, items });
+    res.status(200).json({ ok: true, items: itemsWithCreatedBy });
   } catch (error) {
     next(error);
   }

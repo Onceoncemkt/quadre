@@ -8,6 +8,7 @@ const requisitionsRouter = Router();
 
 const managerRoles = ['OWNER', 'ADMIN', 'MANAGER'];
 const approverRoles = ['OWNER', 'ADMIN'];
+const ownerAdminRoles = ['OWNER', 'ADMIN'];
 
 const createItemSchema = z.object({
   name: z.string().trim().min(1),
@@ -272,7 +273,7 @@ requisitionsRouter.delete(
 requisitionsRouter.delete(
   '/businesses/:businessId/counterparties/:id',
   authMiddleware,
-  requireRole((req) => req.params.businessId, managerRoles),
+  requireRole((req) => req.params.businessId, ownerAdminRoles),
   async (req, res, next) => {
     try {
       const { businessId, id } = req.params;
@@ -440,7 +441,7 @@ requisitionsRouter.patch(
 requisitionsRouter.post(
   '/businesses/:businessId/counterparties',
   authMiddleware,
-  requireRole((req) => req.params.businessId, managerRoles),
+  requireRole((req) => req.params.businessId),
   async (req, res, next) => {
     try {
       const { businessId } = req.params;
@@ -495,7 +496,7 @@ requisitionsRouter.get(
 requisitionsRouter.patch(
   '/businesses/:businessId/counterparties/:id',
   authMiddleware,
-  requireRole((req) => req.params.businessId, managerRoles),
+  requireRole((req) => req.params.businessId),
   async (req, res, next) => {
     try {
       const { businessId, id } = req.params;
