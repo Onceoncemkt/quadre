@@ -143,6 +143,9 @@ export type RequisitionItem = {
   status: RequisitionStatus
   requestedById: string | null
   approvedById: string | null
+  createdAt: string
+  approvedAt: string | null
+  receivedAt: string | null
   estimatedTotal: string
   receivedTotal: string | null
   notes: string | null
@@ -428,6 +431,24 @@ export async function createRequisition({
 }) {
   return request<{ requisition: RequisitionItem }>(`/locations/${locationId}/requisitions`, {
     method: 'POST',
+    token,
+    body: payload,
+  })
+}
+
+export async function patchRequisition({
+  token,
+  requisitionId,
+  payload,
+}: {
+  token: string
+  requisitionId: string
+  payload: {
+    counterpartyId: string
+  }
+}) {
+  return request<{ requisition: RequisitionItem }>(`/requisitions/${requisitionId}`, {
+    method: 'PATCH',
     token,
     body: payload,
   })

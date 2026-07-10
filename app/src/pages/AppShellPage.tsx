@@ -1,5 +1,5 @@
 import type { FormEvent } from 'react'
-import { useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import {
   approveRequisition,
   cancelRequisition,
@@ -32,6 +32,7 @@ import {
   payEnvelope,
   patchBusinessCounterparty,
   patchBusinessItem,
+  patchRequisition,
   receiveRequisition,
   transferEnvelope,
   getShiftClosings,
@@ -221,6 +222,10 @@ type PayableCounterpartyDraft = {
   name: string
   type: 'SUPPLIER' | 'LENDER'
   phone: string
+}
+type RequisitionAssignDraft = {
+  counterpartyId: string
+  showInlineCreate: boolean
 }
 
 const requisitionFilterOptions: Array<{ key: RequisitionsFilter; label: string }> = [
@@ -578,6 +583,13 @@ export function AppShellPage() {
   const [showRequisitionForm, setShowRequisitionForm] = useState(false)
   const [requisitionSearch, setRequisitionSearch] = useState('')
   const [requisitionSearchQty, setRequisitionSearchQty] = useState(1)
+  const [expandedRequisitionId, setExpandedRequisitionId] = useState('')
+  const [assignDraftByRequisitionId, setAssignDraftByRequisitionId] = useState<Record<string, RequisitionAssignDraft>>({})
+  const [requisitionCounterpartyDraft, setRequisitionCounterpartyDraft] = useState<PayableCounterpartyDraft>({
+    name: '',
+    type: 'SUPPLIER',
+    phone: '',
+  })
   const [savingRequisition, setSavingRequisition] = useState(false)
   const [requisitionFormError, setRequisitionFormError] = useState('')
   const [requisitionsSuccess, setRequisitionsSuccess] = useState('')
@@ -2180,6 +2192,105 @@ export function AppShellPage() {
     }
   }
 
+  function canAssignPendingRequisitionProvider(requisition: RequisitionItem) {
+    return (
+      !requisition.counterpartyId &&
+      (requisition.status === 'PENDING_APPROVAL' || requisition.status === 'APPROVED')
+    )
+  }
+
+  function getAssignRequisitionDraft(requisition: RequisitionItem): RequisitionAssignDraft {
+    return (
+      assignDraftByRequisitionId[requisition.id] || {
+        counterpartyId: '',
+        showInlineCreate: false,
+      }
+    )
+  }
+
+  function toggleRequisitionDetail(requisition: RequisitionItem) {
+    setExpandedRequisitionId((prev) => (prev === requisition.id ? '' : requisition.id))
+    if (!canAssignPendingRequisitionProvider(requisition)) return
+    setAssignDraftByRequisitionId((prev) =>
+      prev[requisition.id]
+        ? prev
+        : {
+            ...prev,
+            [requisition.id]: { counterpartyId: '', showInlineCreate: false },
+          },
+    )
+  }
+
+  async function handleAssignCounterpartyToRequisition(requisition: RequisitionItem) {
+    if (!token) return
+    const draft = getAssignRequisitionDraft(requisition)
+    if (!draft.counterpartyId) {
+      setRequisitionsError('Selecciona un proveedor para asignar')
+      return
+    }
+    setRowActionLoadingId(`assign-${requisition.id}`)
+    setRequisitionsError('')
+    setRequisitionsSuccess('')
+    try {
+      await patchRequisition({
+        token,
+        requisitionId: requisition.id,
+        payload: { counterpartyId: draft.counterpartyId },
+      })
+      await refreshRequisitionsData()
+      setAssignDraftByRequisitionId((prev) => {
+        const next = { ...prev }
+        delete next[requisition.id]
+        return next
+      })
+      setRequisitionsSuccess('Proveedor asignado ✓')
+    } catch (error) {
+      setRequisitionsError(error instanceof Error ? error.message : 'No se pudo asignar el proveedor')
+    } finally {
+      setRowActionLoadingId('')
+    }
+  }
+
+  async function handleCreateInlineRequisitionCounterparty(requisition: RequisitionItem) {
+    if (!token || !selectedBusinessId) return
+    if (!requisitionCounterpartyDraft.name.trim()) {
+      setRequisitionsError('Nombre de proveedor es obligatorio')
+      return
+    }
+    setRowActionLoadingId(`assign-create-${requisition.id}`)
+    setRequisitionsError('')
+    setRequisitionsSuccess('')
+    try {
+      const createResponse = await createBusinessCounterparty({
+        token,
+        businessId: selectedBusinessId,
+        payload: {
+          name: requisitionCounterpartyDraft.name.trim(),
+          type: requisitionCounterpartyDraft.type,
+          phone: requisitionCounterpartyDraft.phone.trim() || undefined,
+        },
+      })
+      const counterpartiesResponse = await getBusinessCounterparties({
+        token,
+        businessId: selectedBusinessId,
+      })
+      setCounterparties(counterpartiesResponse.counterparties || [])
+      setAssignDraftByRequisitionId((prev) => ({
+        ...prev,
+        [requisition.id]: {
+          counterpartyId: createResponse.counterparty.id,
+          showInlineCreate: false,
+        },
+      }))
+      setRequisitionCounterpartyDraft({ name: '', type: 'SUPPLIER', phone: '' })
+      setRequisitionsSuccess('Proveedor creado ✓')
+    } catch (error) {
+      setRequisitionsError(error instanceof Error ? error.message : 'No se pudo crear el proveedor')
+    } finally {
+      setRowActionLoadingId('')
+    }
+  }
+
   async function handleApproveRequisition(requisitionId: string) {
     if (!token) return
     setRowActionLoadingId(requisitionId)
@@ -2897,83 +3008,234 @@ export function AppShellPage() {
                     <th className="is-right">Costeo estimado</th>
                     <th className="is-right">Recibido</th>
                     <th>Estado</th>
-                    <th>Acciones</th>
+                    <th>Detalle</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {requisitions.map((requisition) => (
-                    <tr key={requisition.id}>
-                      <td className="q-mono">#{requisition.folio}</td>
-                      <td>{requisition.counterparty?.name || 'Sin asignar'}</td>
-                      <td>{requisition.requestedBy?.name || '—'}</td>
-                      <td className="is-right q-mono">{formatMoney(asDecimal(requisition.estimatedTotal))}</td>
-                      <td className="is-right q-mono">
-                        {requisition.receivedTotal ? formatMoney(asDecimal(requisition.receivedTotal)) : '—'}
-                      </td>
-                      <td>
-                        <span className={`q-chip ${requisitionStatusChipClass(requisition.status)}`}>
-                          {formatRequisitionStatus(requisition.status)}
-                        </span>
-                      </td>
-                      <td>
-                        <div className="q-table-actions">
-                          {canApproveOrCancelRequisition && requisition.status === 'PENDING_APPROVAL' ? (
+                  {requisitions.map((requisition) => {
+                    const isExpanded = expandedRequisitionId === requisition.id
+                    const canAssignProvider = canAssignPendingRequisitionProvider(requisition)
+                    const assignDraft = getAssignRequisitionDraft(requisition)
+                    return (
+                      <Fragment key={requisition.id}>
+                        <tr className="q-requisition-row" onClick={() => toggleRequisitionDetail(requisition)}>
+                          <td className="q-mono">#{requisition.folio}</td>
+                          <td>{requisition.counterparty?.name || 'Sin asignar'}</td>
+                          <td>{requisition.requestedBy?.name || '—'}</td>
+                          <td className="is-right q-mono">{formatMoney(asDecimal(requisition.estimatedTotal))}</td>
+                          <td className="is-right q-mono">
+                            {requisition.receivedTotal ? formatMoney(asDecimal(requisition.receivedTotal)) : '—'}
+                          </td>
+                          <td>
+                            <span className={`q-chip ${requisitionStatusChipClass(requisition.status)}`}>
+                              {formatRequisitionStatus(requisition.status)}
+                            </span>
+                          </td>
+                          <td>
                             <button
                               type="button"
                               className="q-link-btn"
-                              disabled={rowActionLoadingId === requisition.id}
-                              onClick={() => handleApproveRequisition(requisition.id)}
+                              onClick={(event) => {
+                                event.stopPropagation()
+                                toggleRequisitionDetail(requisition)
+                              }}
                             >
-                              Aprobar
+                              {isExpanded ? 'Ocultar' : 'Ver'}
                             </button>
-                          ) : null}
-                          {canReceiveRequisition && requisition.status === 'APPROVED' ? (
-                            <button type="button" className="q-link-btn" onClick={() => openReceiveModal(requisition)}>
-                              Recibir
-                            </button>
-                          ) : null}
-                          {requisition.counterparty &&
-                          (requisition.status === 'PENDING_APPROVAL' || requisition.status === 'APPROVED') ? (
-                            <button type="button" className="q-link-btn" onClick={() => handleSendOrderWhatsApp(requisition)}>
-                              Enviar pedido
-                            </button>
-                          ) : null}
-                          {canApproveOrCancelRequisition &&
-                          requisition.status !== 'RECEIVED' &&
-                          requisition.status !== 'CANCELLED' ? (
-                            <button
-                              type="button"
-                              className="q-link-btn q-link-danger"
-                              disabled={rowActionLoadingId === requisition.id}
-                              onClick={() => handleCancelRequisition(requisition.id)}
-                            >
-                              Cancelar
-                            </button>
-                          ) : null}
-                        </div>
-                        {requisition.counterparty &&
-                        phoneCaptureCounterpartyId === requisition.counterparty.id &&
-                        !requisition.counterparty.phone ? (
-                          <div className="q-inline-phone-form">
-                            <input
-                              type="text"
-                              placeholder="Teléfono proveedor"
-                              value={phoneCaptureValue}
-                              onChange={(event) => setPhoneCaptureValue(event.target.value)}
-                            />
-                            <button
-                              type="button"
-                              className="q-link-btn"
-                              disabled={savingCatalog}
-                              onClick={() => handleSavePhoneAndSendOrder(requisition)}
-                            >
-                              Guardar y enviar
-                            </button>
-                          </div>
+                          </td>
+                        </tr>
+                        {isExpanded ? (
+                          <tr className="q-requisition-detail-row">
+                            <td colSpan={7}>
+                              <div className="q-requisition-detail">
+                                <p className="q-table-muted">
+                                  Solicitó: {requisition.requestedBy?.name || '—'} · Fecha:{' '}
+                                  {formatDateFromIsoString(requisition.createdAt)}
+                                </p>
+                                {requisition.notes ? (
+                                  <p className="q-table-muted">Notas: {requisition.notes}</p>
+                                ) : null}
+                                <div className="q-requisition-lines">
+                                  {requisition.lines.map((line) => {
+                                    const subtotal = asDecimal(line.qty) * asDecimal(line.unitPrice)
+                                    return (
+                                      <div key={line.id} className="q-requisition-line">
+                                        <span>{line.item.name}</span>
+                                        <span className="q-mono">{asDecimal(line.qty)} {line.item.unit}</span>
+                                        <span className="q-mono">{formatMoney(asDecimal(line.unitPrice))}</span>
+                                        <strong className="q-mono q-requisition-line-subtotal">{formatMoney(subtotal)}</strong>
+                                      </div>
+                                    )
+                                  })}
+                                </div>
+                                {canAssignProvider ? (
+                                  <div className="q-requisition-assign-block">
+                                    <label className="q-field">
+                                      Asignar proveedor
+                                      <select
+                                        value={assignDraft.counterpartyId}
+                                        onChange={(event) =>
+                                          setAssignDraftByRequisitionId((prev) => ({
+                                            ...prev,
+                                            [requisition.id]: {
+                                              ...assignDraft,
+                                              counterpartyId: event.target.value,
+                                            },
+                                          }))
+                                        }
+                                      >
+                                        <option value="">Selecciona proveedor</option>
+                                        {activeCounterparties.map((counterparty) => (
+                                          <option key={counterparty.id} value={counterparty.id}>
+                                            {counterparty.name}
+                                          </option>
+                                        ))}
+                                      </select>
+                                    </label>
+                                    <div className="q-table-actions">
+                                      <button
+                                        type="button"
+                                        className="q-link-btn"
+                                        disabled={rowActionLoadingId === `assign-${requisition.id}`}
+                                        onClick={() => handleAssignCounterpartyToRequisition(requisition)}
+                                      >
+                                        Asignar proveedor
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="q-link-btn"
+                                        onClick={() =>
+                                          setAssignDraftByRequisitionId((prev) => ({
+                                            ...prev,
+                                            [requisition.id]: {
+                                              ...assignDraft,
+                                              showInlineCreate: !assignDraft.showInlineCreate,
+                                            },
+                                          }))
+                                        }
+                                      >
+                                        {assignDraft.showInlineCreate ? 'Cerrar alta rápida' : 'Crear proveedor'}
+                                      </button>
+                                    </div>
+                                    {assignDraft.showInlineCreate ? (
+                                      <div className="q-payable-inline-counterparty-form">
+                                        <div className="q-field-grid-3">
+                                          <label className="q-field">
+                                            Nombre
+                                            <input
+                                              type="text"
+                                              value={requisitionCounterpartyDraft.name}
+                                              onChange={(event) =>
+                                                setRequisitionCounterpartyDraft((prev) => ({
+                                                  ...prev,
+                                                  name: event.target.value,
+                                                }))
+                                              }
+                                            />
+                                          </label>
+                                          <label className="q-field">
+                                            Tipo
+                                            <select
+                                              value={requisitionCounterpartyDraft.type}
+                                              onChange={(event) =>
+                                                setRequisitionCounterpartyDraft((prev) => ({
+                                                  ...prev,
+                                                  type: event.target.value as PayableCounterpartyDraft['type'],
+                                                }))
+                                              }
+                                            >
+                                              <option value="SUPPLIER">Proveedor</option>
+                                              <option value="LENDER">Prestamista</option>
+                                            </select>
+                                          </label>
+                                          <label className="q-field">
+                                            Teléfono (opcional)
+                                            <input
+                                              type="text"
+                                              value={requisitionCounterpartyDraft.phone}
+                                              onChange={(event) =>
+                                                setRequisitionCounterpartyDraft((prev) => ({
+                                                  ...prev,
+                                                  phone: event.target.value,
+                                                }))
+                                              }
+                                            />
+                                          </label>
+                                        </div>
+                                        <button
+                                          type="button"
+                                          className="q-link-btn"
+                                          disabled={rowActionLoadingId === `assign-create-${requisition.id}`}
+                                          onClick={() => handleCreateInlineRequisitionCounterparty(requisition)}
+                                        >
+                                          Crear proveedor
+                                        </button>
+                                      </div>
+                                    ) : null}
+                                  </div>
+                                ) : null}
+                                <div className="q-table-actions">
+                                  {canApproveOrCancelRequisition && requisition.status === 'PENDING_APPROVAL' ? (
+                                    <button
+                                      type="button"
+                                      className="q-link-btn"
+                                      disabled={rowActionLoadingId === requisition.id}
+                                      onClick={() => handleApproveRequisition(requisition.id)}
+                                    >
+                                      Aprobar
+                                    </button>
+                                  ) : null}
+                                  {canReceiveRequisition && requisition.status === 'APPROVED' ? (
+                                    <button type="button" className="q-link-btn" onClick={() => openReceiveModal(requisition)}>
+                                      Recibir
+                                    </button>
+                                  ) : null}
+                                  {requisition.counterparty &&
+                                  (requisition.status === 'PENDING_APPROVAL' || requisition.status === 'APPROVED') ? (
+                                    <button type="button" className="q-link-btn" onClick={() => handleSendOrderWhatsApp(requisition)}>
+                                      Enviar pedido
+                                    </button>
+                                  ) : null}
+                                  {canApproveOrCancelRequisition &&
+                                  requisition.status !== 'RECEIVED' &&
+                                  requisition.status !== 'CANCELLED' ? (
+                                    <button
+                                      type="button"
+                                      className="q-link-btn q-link-danger"
+                                      disabled={rowActionLoadingId === requisition.id}
+                                      onClick={() => handleCancelRequisition(requisition.id)}
+                                    >
+                                      Cancelar
+                                    </button>
+                                  ) : null}
+                                </div>
+                                {requisition.counterparty &&
+                                phoneCaptureCounterpartyId === requisition.counterparty.id &&
+                                !requisition.counterparty.phone ? (
+                                  <div className="q-inline-phone-form">
+                                    <input
+                                      type="text"
+                                      placeholder="Teléfono proveedor"
+                                      value={phoneCaptureValue}
+                                      onChange={(event) => setPhoneCaptureValue(event.target.value)}
+                                    />
+                                    <button
+                                      type="button"
+                                      className="q-link-btn"
+                                      disabled={savingCatalog}
+                                      onClick={() => handleSavePhoneAndSendOrder(requisition)}
+                                    >
+                                      Guardar y enviar
+                                    </button>
+                                  </div>
+                                ) : null}
+                              </div>
+                            </td>
+                          </tr>
                         ) : null}
-                      </td>
-                    </tr>
-                  ))}
+                      </Fragment>
+                    )
+                  })}
                 </tbody>
               </table>
             </div>

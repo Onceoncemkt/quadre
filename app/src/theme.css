@@ -371,6 +371,52 @@ body {
 .q-requisition-primary-btn {
   margin-top: 14px;
 }
+.q-requisition-row {
+  cursor: pointer;
+}
+
+.q-requisition-row:hover {
+  background: #f8fafb;
+}
+
+.q-requisition-detail-row td {
+  padding: 0;
+  background: #f8fafb;
+}
+
+.q-requisition-detail {
+  display: grid;
+  gap: 10px;
+  padding: 12px 14px;
+}
+
+.q-requisition-detail p {
+  margin: 0;
+}
+
+.q-requisition-lines {
+  display: grid;
+  gap: 6px;
+}
+
+.q-requisition-line {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) 160px 160px 180px;
+  gap: 8px;
+  align-items: center;
+}
+
+.q-requisition-line-subtotal {
+  text-align: right;
+}
+
+.q-requisition-assign-block {
+  border: 1px dashed var(--linea);
+  border-radius: 12px;
+  padding: 10px;
+  display: grid;
+  gap: 8px;
+}
 
 .q-month-nav {
   display: inline-flex;

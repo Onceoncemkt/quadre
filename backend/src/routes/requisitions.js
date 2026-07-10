@@ -76,6 +76,9 @@ const receiveRequisitionSchema = z.object({
     )
     .min(1),
 });
+const patchRequisitionSchema = z.object({
+  counterpartyId: z.string().trim().min(1),
+});
 
 function parseDateOnly(dateString) {
   const date = new Date(`${dateString}T00:00:00.000Z`);
@@ -687,6 +690,62 @@ requisitionsRouter.post('/requisitions/:id/approve', authMiddleware, async (req,
     });
 
     res.status(200).json({ ok: true, requisition: approved });
+  } catch (error) {
+    next(error);
+  }
+});
+requisitionsRouter.patch('/requisitions/:id', authMiddleware, async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const parsed = patchRequisitionSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ ok: false, error: 'Payload inválido', details: parsed.error.flatten() });
+      return;
+    }
+
+    const { requisition, membership } = await getMembershipForRequisition({
+      userId: req.userId,
+      requisitionId: id,
+    });
+
+    if (!requisition) {
+      res.status(404).json({ ok: false, error: 'Requisición no encontrada' });
+      return;
+    }
+
+    if (!membership || !managerRoles.includes(membership.role)) {
+      res.status(403).json({ ok: false, error: 'No autorizado para actualizar requisiciones' });
+      return;
+    }
+
+    if (requisition.status === 'RECEIVED' || requisition.status === 'CANCELLED') {
+      res.status(409).json({ ok: false, error: 'No se puede cambiar proveedor en requisiciones recibidas o canceladas' });
+      return;
+    }
+
+    const counterparty = await prisma.counterparty.findUnique({
+      where: { id: parsed.data.counterpartyId },
+      select: { id: true, businessId: true, active: true },
+    });
+    if (!counterparty || counterparty.businessId !== requisition.location.businessId || !counterparty.active) {
+      res.status(400).json({ ok: false, error: 'Proveedor inválido para este negocio' });
+      return;
+    }
+
+    const updated = await prisma.requisition.update({
+      where: { id },
+      data: { counterpartyId: counterparty.id },
+      include: {
+        lines: {
+          include: {
+            item: true,
+          },
+        },
+        counterparty: true,
+      },
+    });
+
+    res.status(200).json({ ok: true, requisition: updated });
   } catch (error) {
     next(error);
   }
