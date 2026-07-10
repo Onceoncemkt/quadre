@@ -1,9 +1,64 @@
 const API_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:4000'
 
 type RequestOptions = {
-  method?: 'GET' | 'POST' | 'PATCH' | 'DELETE'
+  method?: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE'
   body?: unknown
   token?: string
+}
+
+export async function getMoneyAccountMovements({
+  token,
+  moneyAccountId,
+  month,
+}: {
+  token: string
+  moneyAccountId: string
+  month: string
+}) {
+  const query = `?month=${encodeURIComponent(month)}`
+  return request<MoneyAccountMovementsResponse>(`/money-accounts/${moneyAccountId}/movements${query}`, {
+    method: 'GET',
+    token,
+  })
+}
+
+export type ChannelAccountMapItem = {
+  channel: 'RAPPI' | 'UBER_EATS' | 'DIDI_FOOD' | 'PISO' | 'EVENTO' | 'OTRO'
+  moneyAccountId: string | null
+}
+
+export async function getBusinessChannelAccountMap({
+  token,
+  businessId,
+}: {
+  token: string
+  businessId: string
+}) {
+  return request<{
+    defaultMoneyAccountId: string | null
+    items: ChannelAccountMapItem[]
+  }>(`/businesses/${businessId}/channel-account-map`, {
+    method: 'GET',
+    token,
+  })
+}
+
+export async function putBusinessChannelAccountMap({
+  token,
+  businessId,
+  payload,
+}: {
+  token: string
+  businessId: string
+  payload: {
+    items: ChannelAccountMapItem[]
+  }
+}) {
+  return request<{ items: ChannelAccountMapItem[] }>(`/businesses/${businessId}/channel-account-map`, {
+    method: 'PUT',
+    token,
+    body: payload,
+  })
 }
 
 
@@ -98,7 +153,7 @@ export async function createBusinessMoneyAccount({
   businessId: string
   payload: {
     name: string
-    kind?: 'BANK' | 'CASH_VAULT' | 'OTHER'
+    kind?: 'TERMINAL' | 'CREDITO' | 'DEBITO'
     initialBalance?: number
   }
 }) {
@@ -120,7 +175,7 @@ export async function patchBusinessMoneyAccount({
   moneyAccountId: string
   payload: {
     name?: string
-    kind?: 'BANK' | 'CASH_VAULT' | 'OTHER'
+    kind?: 'TERMINAL' | 'CREDITO' | 'DEBITO'
     initialBalance?: number
     active?: boolean
   }
@@ -133,6 +188,36 @@ export async function patchBusinessMoneyAccount({
       body: payload,
     },
   )
+}
+
+export async function deleteBusinessMoneyAccount({
+  token,
+  businessId,
+  moneyAccountId,
+}: {
+  token: string
+  businessId: string
+  moneyAccountId: string
+}) {
+  return request<{
+    action: 'DELETED' | 'DEACTIVATED'
+    hadHistory: boolean
+    defaultCleared: boolean
+    history: {
+      expenses: number
+      payments: number
+      mappedSales: number
+      defaultFallbackSales: number
+    }
+    moneyAccount: {
+      id: string
+      name: string
+      active: boolean
+    }
+  }>(`/businesses/${businessId}/money-accounts/${moneyAccountId}`, {
+    method: 'DELETE',
+    token,
+  })
 }
 
 export async function patchBusinessDefaultMoneyAccount({
@@ -158,29 +243,57 @@ export async function patchBusinessDefaultMoneyAccount({
 
 export type MoneyAccountMovement = {
   id: string
-  type: 'SALE_INFLOW' | 'EXPENSE_OUTFLOW' | 'SUPPLIER_PAYMENT_OUTFLOW'
-  typeLabel: string
-  concept: string
+  type: 'entrada' | 'salida'
+  description: string
   date: string
   amount: number
   createdAt: string
+  createdBy: {
+    id: string
+    name: string
+    email: string
+  } | null
+}
+
+export type MoneyAccountMovementDayGroup = {
+  date: string
+  entries: number
+  outflows: number
+  net: number
+  movements: MoneyAccountMovement[]
+}
+
+export type MoneyAccountMovementsResponse = {
+  month: string
+  account: {
+    id: string
+    businessId: string
+    name: string
+    kind: 'TERMINAL' | 'CREDITO' | 'DEBITO'
+    isDefault: boolean
+  }
+  totals: {
+    entries: number
+    outflows: number
+    net: number
+  }
+  groupedByDay: MoneyAccountMovementDayGroup[]
+  movements: MoneyAccountMovement[]
 }
 
 export type MoneyAccountItem = {
   id: string
   businessId: string
   name: string
-  kind: 'BANK' | 'CASH_VAULT' | 'OTHER'
+  kind: 'TERMINAL' | 'CREDITO' | 'DEBITO'
   initialBalance: number
   active: boolean
   createdAt: string
   isDefault: boolean
-  entries: number
-  outflows: number
-  balance: number
   monthEntries: number
   monthOutflows: number
-  movements: MoneyAccountMovement[]
+  monthNet: number
+  balance: number
 }
 
 export async function getBusinessPayables({

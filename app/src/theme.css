@@ -629,6 +629,68 @@ body {
   padding-top: 6px;
 }
 
+.q-money-account-statement {
+  margin-top: 10px;
+  display: grid;
+  gap: 12px;
+}
+
+.q-money-account-month-totals {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.q-money-account-total-item {
+  display: grid;
+  gap: 6px;
+}
+
+.q-money-account-total-item strong {
+  font-size: 20px;
+}
+
+.q-money-account-day-groups {
+  display: grid;
+}
+
+.q-money-account-day-group {
+  padding: 10px 0;
+  border-top: 1px dotted var(--linea);
+}
+
+.q-money-account-day-group:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+
+.q-money-account-day-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.q-money-account-day-items {
+  display: grid;
+  gap: 8px;
+}
+
+.q-money-account-movement-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+  align-items: start;
+}
+
+.q-money-account-amount-in {
+  color: #335e00;
+}
+
+.q-money-account-amount-out {
+  color: var(--falt);
+}
+
 .q-envelope-strip {
   margin-top: 14px;
   display: flex;
@@ -1349,6 +1411,8 @@ body {
   .q-payable-purchase-stats,
   .q-payable-payment-form,
   .q-payable-history-row,
+  .q-money-account-month-totals,
+  .q-money-account-movement-row,
   .q-cash-breakdown-row {
     grid-template-columns: 1fr;
   }
