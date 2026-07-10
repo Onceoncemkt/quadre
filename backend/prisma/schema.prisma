@@ -9,9 +9,31 @@ generator client {
   provider = "prisma-client-js"
 }
 
+
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
+}
+
+model MoneyAccount {
+  id                  String   @id @default(cuid())
+  businessId          String
+  name                String
+  kind                MoneyAccountKind @default(BANK)
+  initialBalance      Decimal  @default(0) @db.Decimal(12, 2)
+  active              Boolean  @default(true)
+  createdAt           DateTime @default(now())
+
+  business            Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  expenses            Expense[]
+  counterpartyPayments CounterpartyPayment[]
+  defaultForBusinesses Business[] @relation("BusinessDefaultMoneyAccount")
+}
+
+enum MoneyAccountKind {
+  BANK
+  CASH_VAULT
+  OTHER
 }
 
 // ============================================================
@@ -29,6 +51,7 @@ model Business {
   plan             PlanTier @default(BASICO)
   trialEndsAt      DateTime?
   currentPeriodEnd DateTime?
+  defaultMoneyAccountId String?
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
@@ -39,6 +62,8 @@ model Business {
   expenseCategories ExpenseCategory[]
   envelopes        Envelope[]
   employees        Employee[]
+  moneyAccounts    MoneyAccount[]
+  defaultMoneyAccount MoneyAccount? @relation("BusinessDefaultMoneyAccount", fields: [defaultMoneyAccountId], references: [id], onDelete: SetNull)
 }
 
 enum BusinessStatus {
@@ -218,6 +243,7 @@ model Expense {
   locationId    String
   categoryId    String
   counterpartyId String? // proveedor/acreedor si aplica
+  moneyAccountId String?
   date          DateTime @db.Date
   concept       String
   amount        Decimal  @db.Decimal(12, 2)
@@ -234,6 +260,7 @@ model Expense {
   location      Location @relation(fields: [locationId], references: [id], onDelete: Cascade)
   category      ExpenseCategory @relation(fields: [categoryId], references: [id])
   counterparty  Counterparty? @relation(fields: [counterpartyId], references: [id])
+  moneyAccount  MoneyAccount? @relation(fields: [moneyAccountId], references: [id], onDelete: SetNull)
 }
 
 enum ExpenseSource {
@@ -312,6 +339,7 @@ model CounterpartyPayment {
   id            String   @id @default(cuid())
   counterpartyId String
   purchaseId    String?  // null = abono a cuenta general
+  moneyAccountId String?
   date          DateTime @db.Date
   amount        Decimal  @db.Decimal(12, 2)
   method        PaymentMethod
@@ -321,6 +349,7 @@ model CounterpartyPayment {
 
   counterparty  Counterparty @relation(fields: [counterpartyId], references: [id])
   purchase      Purchase? @relation(fields: [purchaseId], references: [id])
+  moneyAccount  MoneyAccount? @relation(fields: [moneyAccountId], references: [id], onDelete: SetNull)
 }
 
 // ============================================================

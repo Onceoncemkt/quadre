@@ -22,6 +22,7 @@ const createExpenseSchema = z.object({
   amount: z.coerce.number().positive(),
   method: z.enum(['EFECTIVO', 'TARJETA', 'TRANSFERENCIA', 'OTRO']),
   counterpartyId: z.string().trim().min(1).optional(),
+  moneyAccountId: z.string().trim().min(1).optional(),
   paidFromCash: z.boolean().optional(),
   notes: z.string().optional(),
 });
@@ -170,11 +171,30 @@ expensesRouter.post('/locations/:locationId/expenses', authMiddleware, async (re
       }
     }
 
+    const isMoneyMethod = parsed.data.method === 'TARJETA' || parsed.data.method === 'TRANSFERENCIA'
+    if (parsed.data.moneyAccountId && !isMoneyMethod) {
+      res
+        .status(400)
+        .json({ ok: false, error: 'moneyAccountId solo se permite cuando el método es TARJETA o TRANSFERENCIA' });
+      return;
+    }
+    if (parsed.data.moneyAccountId) {
+      const moneyAccount = await prisma.moneyAccount.findUnique({
+        where: { id: parsed.data.moneyAccountId },
+        select: { id: true, businessId: true, active: true },
+      });
+      if (!moneyAccount || moneyAccount.businessId !== location.businessId || !moneyAccount.active) {
+        res.status(400).json({ ok: false, error: 'Cuenta inválida para este negocio' });
+        return;
+      }
+    }
+
     const expense = await prisma.expense.create({
       data: {
         locationId,
         categoryId: parsed.data.categoryId,
         counterpartyId: parsed.data.counterpartyId || null,
+        moneyAccountId: parsed.data.moneyAccountId || null,
         date: expenseDate,
         concept: parsed.data.concept,
         amount: Number(parsed.data.amount.toFixed(2)),
@@ -186,6 +206,7 @@ expensesRouter.post('/locations/:locationId/expenses', authMiddleware, async (re
       include: {
         category: true,
         counterparty: true,
+        moneyAccount: true,
       },
     });
 
@@ -240,6 +261,7 @@ expensesRouter.get('/locations/:locationId/expenses', authMiddleware, async (req
       include: {
         category: true,
         counterparty: true,
+        moneyAccount: true,
       },
       orderBy: [{ date: 'desc' }, { createdAt: 'desc' }],
     });

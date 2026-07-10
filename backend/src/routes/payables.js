@@ -22,6 +22,7 @@ const createPurchasePaymentSchema = z.object({
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   amount: z.coerce.number().positive(),
   method: z.enum(['EFECTIVO', 'TARJETA', 'TRANSFERENCIA', 'APP', 'OTRO']),
+  moneyAccountId: z.string().trim().min(1).optional(),
   evidenceUrl: z.string().url().optional(),
   notes: z.string().optional(),
   locationId: z.string().trim().min(1).optional(),
@@ -253,6 +254,28 @@ payablesRouter.post('/purchases/:id/payments', authMiddleware, async (req, res, 
       return;
     }
 
+    const isMoneyMethod = parsed.data.method === 'TARJETA' || parsed.data.method === 'TRANSFERENCIA';
+    if (parsed.data.moneyAccountId && !isMoneyMethod) {
+      res.status(400).json({
+        ok: false,
+        error: 'moneyAccountId solo se permite cuando el método es TARJETA o TRANSFERENCIA',
+      });
+      return;
+    }
+
+    let moneyAccountId = null;
+    if (isMoneyMethod && parsed.data.moneyAccountId) {
+      const moneyAccount = await prisma.moneyAccount.findUnique({
+        where: { id: parsed.data.moneyAccountId },
+        select: { id: true, businessId: true, active: true },
+      });
+      if (!moneyAccount || moneyAccount.businessId !== purchase.counterparty.businessId || !moneyAccount.active) {
+        res.status(400).json({ ok: false, error: 'Cuenta inválida para este negocio' });
+        return;
+      }
+      moneyAccountId = moneyAccount.id;
+    }
+
     let locationIdForExpense = null;
     let categoryIdForExpense = null;
     if (purchase.kind === 'LOAN') {
@@ -306,6 +329,7 @@ payablesRouter.post('/purchases/:id/payments', authMiddleware, async (req, res, 
         data: {
           counterpartyId: purchase.counterpartyId,
           purchaseId: purchase.id,
+          moneyAccountId,
           date: paymentDate,
           amount,
           method: parsed.data.method,
@@ -339,6 +363,7 @@ payablesRouter.post('/purchases/:id/payments', authMiddleware, async (req, res, 
               : `Abono préstamo: ${purchase.counterparty.name}`,
             amount,
             method: parsed.data.method,
+            moneyAccountId,
             source: 'LOAN_PAYMENT',
             paidFromCash: false,
             evidenceUrl: parsed.data.evidenceUrl?.trim() || null,
@@ -371,6 +396,9 @@ payablesRouter.get('/purchases/:id/payments', authMiddleware, async (req, res, n
 
     const items = await prisma.counterpartyPayment.findMany({
       where: { purchaseId: id },
+      include: {
+        moneyAccount: true,
+      },
       orderBy: [{ date: 'desc' }, { createdAt: 'desc' }],
     });
 
