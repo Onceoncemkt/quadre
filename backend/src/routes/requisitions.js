@@ -53,6 +53,7 @@ const createCounterpartySchema = z.object({
 const createRequisitionSchema = z.object({
   counterpartyId: z.string().trim().min(1).optional(),
   notes: z.string().optional(),
+  expectedDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   lines: z
     .array(
       z.object({
@@ -66,6 +67,7 @@ const createRequisitionSchema = z.object({
 
 const receiveRequisitionSchema = z.object({
   counterpartyId: z.string().trim().min(1).optional(),
+  receivedDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   lines: z
     .array(
       z.object({
@@ -90,6 +92,12 @@ function getMexicoTodayDate() {
   const mxDate = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Mexico_City' });
   const parsed = parseDateOnly(mxDate);
   return parsed || new Date();
+}
+
+function getMexicoTomorrowDate() {
+  const tomorrow = getMexicoTodayDate();
+  tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
+  return tomorrow;
 }
 
 async function getMembershipForLocation({ userId, locationId }) {
@@ -615,6 +623,11 @@ requisitionsRouter.post('/locations/:locationId/requisitions', authMiddleware, a
     const estimatedTotal = Number(
       normalizedLines.reduce((sum, line) => sum + line.qty * line.unitPrice, 0).toFixed(2),
     );
+    const expectedDate = parsed.data.expectedDate ? parseDateOnly(parsed.data.expectedDate) : getMexicoTomorrowDate();
+    if (!expectedDate) {
+      res.status(400).json({ ok: false, error: 'expectedDate inválida' });
+      return;
+    }
 
     const requisition = await prisma.$transaction(async (tx) => {
       const latestFolio = await tx.requisition.findFirst({
@@ -637,6 +650,7 @@ requisitionsRouter.post('/locations/:locationId/requisitions', authMiddleware, a
           requestedById: req.userId,
           estimatedTotal,
           notes: parsed.data.notes,
+          expectedDate,
           lines: {
             create: normalizedLines.map((line) => ({
               itemId: line.itemId,
@@ -653,6 +667,10 @@ requisitionsRouter.post('/locations/:locationId/requisitions', authMiddleware, a
 
     res.status(201).json({ ok: true, requisition });
   } catch (error) {
+    if (error?.message === 'expectedDate inválida') {
+      res.status(400).json({ ok: false, error: 'expectedDate inválida' });
+      return;
+    }
     next(error);
   }
 });
@@ -724,6 +742,12 @@ requisitionsRouter.post('/locations/:locationId/requisitions/batch', authMiddlew
     });
 
     const requisitions = await prisma.$transaction(async (tx) => {
+      const expectedDate = parsed.data.expectedDate
+        ? parseDateOnly(parsed.data.expectedDate)
+        : getMexicoTomorrowDate();
+      if (!expectedDate) {
+        throw new Error('expectedDate inválida');
+      }
       const latestFolio = await tx.requisition.findFirst({
         where: {
           location: {
@@ -749,6 +773,7 @@ requisitionsRouter.post('/locations/:locationId/requisitions/batch', authMiddlew
             requestedById: req.userId,
             estimatedTotal,
             notes: parsed.data.notes,
+            expectedDate,
             lines: {
               create: lines.map((line) => ({
                 itemId: line.itemId,
@@ -758,7 +783,12 @@ requisitionsRouter.post('/locations/:locationId/requisitions/batch', authMiddlew
             },
           },
           include: {
-            lines: true,
+            lines: {
+              include: {
+                item: true,
+              },
+            },
+            counterparty: true,
           },
         });
         created.push(requisition);
@@ -769,6 +799,10 @@ requisitionsRouter.post('/locations/:locationId/requisitions/batch', authMiddlew
 
     res.status(201).json({ ok: true, requisitions });
   } catch (error) {
+    if (error?.message === 'expectedDate inválida') {
+      res.status(400).json({ ok: false, error: 'expectedDate inválida' });
+      return;
+    }
     next(error);
   }
 });
@@ -928,7 +962,11 @@ requisitionsRouter.post('/requisitions/:id/receive', authMiddleware, async (req,
       return;
     }
 
-    const today = getMexicoTodayDate();
+    const receivedDate = parsed.data.receivedDate ? parseDateOnly(parsed.data.receivedDate) : getMexicoTodayDate();
+    if (!receivedDate) {
+      res.status(400).json({ ok: false, error: 'receivedDate inválida' });
+      return;
+    }
     const normalized = requisition.lines.map((line) => {
       const incoming = incomingLineMap.get(line.id);
       const receivedQty = Number(Number(incoming.receivedQty).toFixed(3));
@@ -983,7 +1021,7 @@ requisitionsRouter.post('/requisitions/:id/receive', authMiddleware, async (req,
         data: normalized.map((line) => ({
           itemId: line.itemId,
           counterpartyId,
-          date: today,
+          date: receivedDate,
           unitPrice: line.actualPrice,
         })),
       });
@@ -993,7 +1031,7 @@ requisitionsRouter.post('/requisitions/:id/receive', authMiddleware, async (req,
           counterpartyId,
           locationId: requisition.locationId,
           kind: 'GOODS',
-          date: today,
+          date: receivedDate,
           total: receivedTotal,
           status: 'PENDING',
           requisitionId: requisition.id,
@@ -1019,7 +1057,7 @@ requisitionsRouter.post('/requisitions/:id/receive', authMiddleware, async (req,
           locationId: requisition.locationId,
           categoryId: insumosCategory.id,
           counterpartyId,
-          date: today,
+          date: receivedDate,
           concept: `Recepción requisición #${requisition.folio}`,
           amount: receivedTotal,
           method: 'OTRO',
