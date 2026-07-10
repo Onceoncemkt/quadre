@@ -89,6 +89,7 @@ model User {
   createdAt    DateTime @default(now())
 
   memberships  Membership[]
+  voidedShifts Shift[]  @relation("ShiftVoidedBy")
 }
 
 model Membership {
@@ -141,13 +142,16 @@ model Shift {
   status      ShiftStatus @default(OPEN)
   openedById  String?
   closedById  String?
+  voidedAt    DateTime?
+  voidedById  String?
+  voidReason  String?
   createdAt   DateTime   @default(now())
 
   location    Location   @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  voidedBy    User?      @relation("ShiftVoidedBy", fields: [voidedById], references: [id], onDelete: SetNull)
   closing     ShiftClosing?
   attendance  AttendanceRecord[]
-
-  @@unique([locationId, date, type])
+  @@index([locationId, date, type, voidedAt])
 }
 
 enum ShiftType {
@@ -308,6 +312,7 @@ model Purchase {
   id            String   @id @default(cuid())
   counterpartyId String
   locationId    String?
+  createdById   String?
   kind          PurchaseKind @default(GOODS)
   reference     String?  // folio de factura/nota
   date          DateTime @db.Date
@@ -340,6 +345,7 @@ model CounterpartyPayment {
   counterpartyId String
   purchaseId    String?  // null = abono a cuenta general
   moneyAccountId String?
+  createdById   String?
   date          DateTime @db.Date
   amount        Decimal  @db.Decimal(12, 2)
   method        PaymentMethod

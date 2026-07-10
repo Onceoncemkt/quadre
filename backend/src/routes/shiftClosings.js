@@ -6,6 +6,7 @@ const { authMiddleware } = require('../middleware/auth');
 const shiftClosingsRouter = Router();
 
 const allowedRoles = new Set(['OWNER', 'ADMIN', 'MANAGER']);
+const ownerAdminRoles = new Set(['OWNER', 'ADMIN']);
 const defaultFeeByChannel = {
   PISO: 0,
   EVENTO: 0,
@@ -34,6 +35,9 @@ const createShiftClosingSchema = z.object({
       }),
     )
     .min(1),
+});
+const voidShiftSchema = z.object({
+  reason: z.string().trim().min(1, 'Motivo obligatorio'),
 });
 
 function toMoney(value) {
@@ -82,6 +86,37 @@ async function getMembershipForLocation({ userId, locationId }) {
   return { location, membership };
 }
 
+async function getMembershipForShift({ userId, shiftId }) {
+  const shift = await prisma.shift.findUnique({
+    where: { id: shiftId },
+    select: {
+      id: true,
+      locationId: true,
+      date: true,
+      type: true,
+      voidedAt: true,
+      location: {
+        select: {
+          businessId: true,
+        },
+      },
+    },
+  });
+
+  if (!shift) return { shift: null, membership: null };
+
+  const membership = await prisma.membership.findUnique({
+    where: {
+      userId_businessId: {
+        userId,
+        businessId: shift.location.businessId,
+      },
+    },
+  });
+
+  return { shift, membership };
+}
+
 shiftClosingsRouter.post('/locations/:locationId/shift-closings', authMiddleware, async (req, res, next) => {
   try {
     const { locationId } = req.params;
@@ -114,6 +149,22 @@ shiftClosingsRouter.post('/locations/:locationId/shift-closings', authMiddleware
     const shiftDate = parseDateOnly(parsed.data.date);
     if (!shiftDate) {
       res.status(400).json({ ok: false, error: 'Fecha inválida' });
+      return;
+    }
+    const existingActiveShift = await prisma.shift.findFirst({
+      where: {
+        locationId,
+        date: shiftDate,
+        type: parsed.data.type,
+        voidedAt: null,
+      },
+      select: { id: true },
+    });
+    if (existingActiveShift) {
+      res.status(409).json({
+        ok: false,
+        error: 'Ya existe un cierre para esa sucursal, fecha y turno',
+      });
       return;
     }
 
@@ -256,7 +307,22 @@ shiftClosingsRouter.get('/locations/:locationId/shift-closings', authMiddleware,
         },
       },
       include: {
-        shift: true,
+        shift: {
+          select: {
+            id: true,
+            date: true,
+            type: true,
+            closedById: true,
+            voidedAt: true,
+            voidReason: true,
+            voidedBy: {
+              select: {
+                id: true,
+                name: true,
+              },
+            },
+          },
+        },
         lines: true,
       },
       orderBy: {
@@ -286,6 +352,67 @@ shiftClosingsRouter.get('/locations/:locationId/shift-closings', authMiddleware,
     }));
 
     res.status(200).json({ ok: true, items });
+  } catch (error) {
+    next(error);
+  }
+});
+
+shiftClosingsRouter.post('/shifts/:id/void', authMiddleware, async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const parsed = voidShiftSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ ok: false, error: 'Payload inválido', details: parsed.error.flatten() });
+      return;
+    }
+
+    const { shift, membership } = await getMembershipForShift({
+      userId: req.userId,
+      shiftId: id,
+    });
+    if (!shift) {
+      res.status(404).json({ ok: false, error: 'Turno no encontrado' });
+      return;
+    }
+    if (!membership || !ownerAdminRoles.has(membership.role)) {
+      res.status(403).json({ ok: false, error: 'Solo OWNER/ADMIN pueden anular cierres' });
+      return;
+    }
+    if (shift.voidedAt) {
+      res.status(409).json({ ok: false, error: 'Este cierre ya está anulado' });
+      return;
+    }
+
+    const hasClosing = await prisma.shiftClosing.findUnique({
+      where: { shiftId: id },
+      select: { id: true },
+    });
+    if (!hasClosing) {
+      res.status(404).json({ ok: false, error: 'No existe cierre para este turno' });
+      return;
+    }
+
+    const voidedShift = await prisma.shift.update({
+      where: { id },
+      data: {
+        voidedAt: new Date(),
+        voidedById: req.userId,
+        voidReason: parsed.data.reason.trim(),
+      },
+      select: {
+        id: true,
+        locationId: true,
+        date: true,
+        type: true,
+        voidedAt: true,
+        voidReason: true,
+        voidedBy: {
+          select: { id: true, name: true },
+        },
+      },
+    });
+
+    res.status(200).json({ ok: true, shift: voidedShift });
   } catch (error) {
     next(error);
   }
