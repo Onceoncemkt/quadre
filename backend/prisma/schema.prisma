@@ -19,7 +19,7 @@ model MoneyAccount {
   id                  String   @id @default(cuid())
   businessId          String
   name                String
-  kind                MoneyAccountKind @default(BANK)
+  kind                MoneyAccountKind @default(TERMINAL)
   initialBalance      Decimal  @default(0) @db.Decimal(12, 2)
   active              Boolean  @default(true)
   createdAt           DateTime @default(now())
@@ -27,13 +27,14 @@ model MoneyAccount {
   business            Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
   expenses            Expense[]
   counterpartyPayments CounterpartyPayment[]
+  channelAccountMaps  ChannelAccountMap[]
   defaultForBusinesses Business[] @relation("BusinessDefaultMoneyAccount")
 }
 
 enum MoneyAccountKind {
-  BANK
-  CASH_VAULT
-  OTHER
+  TERMINAL
+  CREDITO
+  DEBITO
 }
 
 // ============================================================
@@ -63,7 +64,21 @@ model Business {
   envelopes        Envelope[]
   employees        Employee[]
   moneyAccounts    MoneyAccount[]
+  channelAccountMaps ChannelAccountMap[]
   defaultMoneyAccount MoneyAccount? @relation("BusinessDefaultMoneyAccount", fields: [defaultMoneyAccountId], references: [id], onDelete: SetNull)
+}
+
+model ChannelAccountMap {
+  id             String         @id @default(cuid())
+  businessId     String
+  channel        RevenueChannel
+  moneyAccountId String
+
+  business       Business       @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  moneyAccount   MoneyAccount   @relation(fields: [moneyAccountId], references: [id], onDelete: Cascade)
+
+  @@unique([businessId, channel])
+  @@index([moneyAccountId])
 }
 
 enum BusinessStatus {
