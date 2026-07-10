@@ -86,6 +86,20 @@ const defaultFeeByChannel: Record<(typeof lineChannels)[number], number> = {
   UBER_EATS: 34.8,
   DIDI_FOOD: 34.8,
 }
+const cashDenominationOptions = [
+  { key: '1000', label: '$1,000', value: 1000, kind: 'Billete' },
+  { key: '500', label: '$500', value: 500, kind: 'Billete' },
+  { key: '200', label: '$200', value: 200, kind: 'Billete' },
+  { key: '100', label: '$100', value: 100, kind: 'Billete' },
+  { key: '50', label: '$50', value: 50, kind: 'Billete' },
+  { key: '20_bill', label: '$20', value: 20, kind: 'Billete' },
+  { key: '20_coin', label: '$20', value: 20, kind: 'Moneda' },
+  { key: '10', label: '$10', value: 10, kind: 'Moneda' },
+  { key: '5', label: '$5', value: 5, kind: 'Moneda' },
+  { key: '2', label: '$2', value: 2, kind: 'Moneda' },
+  { key: '1', label: '$1', value: 1, kind: 'Moneda' },
+  { key: '0.5', label: '$0.50', value: 0.5, kind: 'Moneda' },
+] as const
 
 type ShiftLineDraft = {
   channel: (typeof lineChannels)[number]
@@ -103,6 +117,8 @@ type ClosingDraft = {
   notes: string
   lines: ShiftLineDraft[]
 }
+
+type ClosingCashBreakdown = Record<string, number>
 
 type RequisitionsFilter = 'ACTIVE' | 'RECEIVED' | 'ALL'
 type RequisitionsTab = 'REQUISITIONS' | 'CATALOG'
@@ -298,6 +314,22 @@ function asDecimal(value: string | number | null | undefined) {
   if (value === null || value === undefined) return 0
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : 0
+}
+
+function getCashBreakdownTotal(cashBreakdown: ClosingCashBreakdown) {
+  return Number(
+    cashDenominationOptions
+      .reduce((sum, denomination) => sum + denomination.value * (cashBreakdown[denomination.key] || 0), 0)
+      .toFixed(2),
+  )
+}
+
+function sanitizeCashBreakdownForPayload(cashBreakdown: ClosingCashBreakdown) {
+  return cashDenominationOptions.reduce<Record<string, number>>((acc, denomination) => {
+    const quantity = Math.max(Math.floor(cashBreakdown[denomination.key] || 0), 0)
+    if (quantity > 0) acc[denomination.key] = quantity
+    return acc
+  }, {})
 }
 
 function formatMoney(value: number) {
@@ -599,6 +631,8 @@ export function AppShellPage() {
     notes: '',
     lines: [{ ...defaultShiftLine }],
   })
+  const [useCashBreakdownMode, setUseCashBreakdownMode] = useState(false)
+  const [closeCashBreakdown, setCloseCashBreakdown] = useState<ClosingCashBreakdown>({})
 
   useEffect(() => {
     if (!memberships.length) {
@@ -949,6 +983,7 @@ export function AppShellPage() {
       pnlSummary.financieros === 0
     )
   }, [pnlSummary])
+  const closeCashBreakdownTotal = useMemo(() => getCashBreakdownTotal(closeCashBreakdown), [closeCashBreakdown])
 
   const closingTotals = useMemo(() => getTotals(closeDraft), [closeDraft])
   const requisitionEstimatedTotal = useMemo(
@@ -985,6 +1020,11 @@ export function AppShellPage() {
       document.body.style.overflow = originalOverflow
     }
   }, [isMobileMenuOpen])
+
+  useEffect(() => {
+    if (!useCashBreakdownMode) return
+    setCloseDraft((prev) => ({ ...prev, countedCash: closeCashBreakdownTotal }))
+  }, [closeCashBreakdownTotal, useCashBreakdownMode])
 
   async function refreshShiftClosings() {
     if (!selectedLocationId || !token) return
@@ -1628,6 +1668,23 @@ export function AppShellPage() {
     })
   }
 
+  function toggleCashBreakdownMode() {
+    setUseCashBreakdownMode((prev) => {
+      const next = !prev
+      if (next) {
+        setCloseDraft((draft) => ({ ...draft, countedCash: closeCashBreakdownTotal }))
+      }
+      return next
+    })
+  }
+
+  function setCashBreakdownQuantity(denominationKey: string, quantity: number) {
+    setCloseCashBreakdown((prev) => ({
+      ...prev,
+      [denominationKey]: Math.max(Math.floor(quantity), 0),
+    }))
+  }
+
   async function refreshTeamMembers() {
     if (!token || !selectedBusinessId) return
     const response = await getBusinessMembers({
@@ -1646,6 +1703,8 @@ export function AppShellPage() {
       notes: '',
       lines: [{ ...defaultShiftLine }],
     })
+    setUseCashBreakdownMode(false)
+    setCloseCashBreakdown({})
     setCloseError('')
   }
 
@@ -1675,6 +1734,9 @@ export function AppShellPage() {
           openingCash: closeDraft.openingCash,
           cashWithdrawn: closeDraft.cashWithdrawn,
           countedCash: closeDraft.countedCash,
+          ...(useCashBreakdownMode
+            ? { cashBreakdown: sanitizeCashBreakdownForPayload(closeCashBreakdown) }
+            : {}),
           notes: closeDraft.notes || undefined,
           lines: closeDraft.lines.map((line) => ({
             channel: line.channel,
@@ -2209,12 +2271,62 @@ export function AppShellPage() {
                     type="number"
                     step="0.01"
                     value={closeDraft.countedCash}
+                    readOnly={useCashBreakdownMode}
                     onChange={(event) =>
                       setCloseDraft((prev) => ({ ...prev, countedCash: asNumber(event.target.value) }))
                     }
                   />
                 </label>
               </div>
+              <div className="q-cash-breakdown-header">
+                <button type="button" className="q-chip-btn" onClick={toggleCashBreakdownMode}>
+                  {useCashBreakdownMode ? 'Usar captura manual' : 'Contar por denominaciones'}
+                </button>
+              </div>
+              {useCashBreakdownMode ? (
+                <section className="q-cash-breakdown">
+                  {cashDenominationOptions.map((denomination) => {
+                    const quantity = closeCashBreakdown[denomination.key] || 0
+                    const subtotal = quantity * denomination.value
+                    return (
+                      <article className="q-cash-breakdown-row" key={denomination.key}>
+                        <div>
+                          <strong>{denomination.label}</strong>
+                          <p className="q-table-muted">{denomination.kind}</p>
+                        </div>
+                        <div className="q-cash-breakdown-controls">
+                          <button
+                            type="button"
+                            className="q-cash-breakdown-step"
+                            onClick={() => setCashBreakdownQuantity(denomination.key, quantity - 1)}
+                          >
+                            −
+                          </button>
+                          <input
+                            type="number"
+                            min={0}
+                            step={1}
+                            value={quantity}
+                            onChange={(event) => setCashBreakdownQuantity(denomination.key, asNumber(event.target.value))}
+                          />
+                          <button
+                            type="button"
+                            className="q-cash-breakdown-step"
+                            onClick={() => setCashBreakdownQuantity(denomination.key, quantity + 1)}
+                          >
+                            +
+                          </button>
+                        </div>
+                        <strong className="q-mono">{formatMoney(subtotal)}</strong>
+                      </article>
+                    )
+                  })}
+                  <div className="q-cash-breakdown-total">
+                    <span>Total contado</span>
+                    <strong className="q-mono">{formatMoney(closeCashBreakdownTotal)}</strong>
+                  </div>
+                </section>
+              ) : null}
 
               <h3>Líneas de venta</h3>
               <div className="q-lines-wrap">
@@ -2377,6 +2489,21 @@ export function AppShellPage() {
                         <span>
                           {formatShiftType(item.shift.type)} · {selectedLocationName || 'Sucursal'}
                         </span>
+                        {item.cashBreakdown ? (
+                          <div className="q-closing-breakdown-ticket">
+                            {cashDenominationOptions
+                              .filter((denomination) => Number(item.cashBreakdown?.[denomination.key] || 0) > 0)
+                              .map((denomination) => {
+                                const quantity = Number(item.cashBreakdown?.[denomination.key] || 0)
+                                const subtotal = quantity * denomination.value
+                                return (
+                                  <p key={`${item.id}-${denomination.key}`} className="q-mono">
+                                    {denomination.label} × {quantity} = {formatMoney(subtotal)}
+                                  </p>
+                                )
+                              })}
+                          </div>
+                        ) : null}
                       </div>
                     </td>
                     <td>{item.closedBy?.name || '—'}</td>

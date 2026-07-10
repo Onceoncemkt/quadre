@@ -889,6 +889,7 @@ export type ShiftClosingItem = {
   openingCash: string
   expectedCash: string
   countedCash: string
+  cashBreakdown: Record<string, number> | null
   difference: string
   cashWithdrawn: string
   shift: {
@@ -935,6 +936,7 @@ export async function createShiftClosing({
     openingCash: number
     cashWithdrawn: number
     countedCash: number
+    cashBreakdown?: Record<string, number>
     ticketCount?: number
     notes?: string
     lines: Array<{

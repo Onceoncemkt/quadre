@@ -885,6 +885,80 @@ body {
   align-items: end;
 }
 
+.q-cash-breakdown-header {
+  margin-top: -4px;
+}
+
+.q-cash-breakdown {
+  display: grid;
+  gap: 8px;
+  border: 1px dashed var(--linea);
+  border-radius: 12px;
+  padding: 10px;
+}
+
+.q-cash-breakdown-row {
+  display: grid;
+  grid-template-columns: 120px 1fr auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.q-cash-breakdown-row p {
+  margin: 2px 0 0;
+}
+
+.q-cash-breakdown-controls {
+  display: grid;
+  grid-template-columns: 46px minmax(70px, 1fr) 46px;
+  gap: 6px;
+}
+
+.q-cash-breakdown-controls input {
+  border: 1px solid var(--linea);
+  border-radius: 8px;
+  padding: 8px 10px;
+  text-align: center;
+  font-size: 16px;
+}
+
+.q-cash-breakdown-step {
+  border: 1px solid var(--linea);
+  background: var(--blanco);
+  border-radius: 8px;
+  font-size: 28px;
+  line-height: 1;
+  min-height: 46px;
+  cursor: pointer;
+}
+
+.q-cash-breakdown-total {
+  margin-top: 4px;
+  border-top: 1px dashed var(--linea);
+  padding-top: 8px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.q-cash-breakdown-total strong {
+  font-size: 30px;
+}
+
+.q-closing-breakdown-ticket {
+  margin-top: 6px;
+  border-top: 1px dashed var(--linea);
+  padding-top: 6px;
+  display: grid;
+  gap: 2px;
+}
+
+.q-closing-breakdown-ticket p {
+  margin: 0;
+  font-size: 12px;
+  color: var(--gris);
+}
+
 .q-arqueo-panel {
   align-self: start;
   display: grid;
