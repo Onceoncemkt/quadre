@@ -41,6 +41,133 @@ export async function register(input: {
   })
 }
 
+export async function getBusinessMoneyAccounts({
+  token,
+  businessId,
+  month,
+}: {
+  token: string
+  businessId: string
+  month?: string
+}) {
+  const query = month ? `?month=${encodeURIComponent(month)}` : ''
+  return request<{
+    month: string
+    defaultMoneyAccountId: string | null
+    items: MoneyAccountItem[]
+  }>(`/businesses/${businessId}/money-accounts${query}`, {
+    method: 'GET',
+    token,
+  })
+}
+
+export async function createBusinessMoneyAccount({
+  token,
+  businessId,
+  payload,
+}: {
+  token: string
+  businessId: string
+  payload: {
+    name: string
+    kind?: 'BANK' | 'CASH_VAULT' | 'OTHER'
+    initialBalance?: number
+  }
+}) {
+  return request<{ moneyAccount: MoneyAccountItem }>(`/businesses/${businessId}/money-accounts`, {
+    method: 'POST',
+    token,
+    body: payload,
+  })
+}
+
+export async function patchBusinessMoneyAccount({
+  token,
+  businessId,
+  moneyAccountId,
+  payload,
+}: {
+  token: string
+  businessId: string
+  moneyAccountId: string
+  payload: {
+    name?: string
+    kind?: 'BANK' | 'CASH_VAULT' | 'OTHER'
+    initialBalance?: number
+    active?: boolean
+  }
+}) {
+  return request<{ moneyAccount: MoneyAccountItem }>(
+    `/businesses/${businessId}/money-accounts/${moneyAccountId}`,
+    {
+      method: 'PATCH',
+      token,
+      body: payload,
+    },
+  )
+}
+
+export async function patchBusinessDefaultMoneyAccount({
+  token,
+  businessId,
+  payload,
+}: {
+  token: string
+  businessId: string
+  payload: {
+    moneyAccountId?: string | null
+  }
+}) {
+  return request<{ business: { id: string; defaultMoneyAccountId: string | null } }>(
+    `/businesses/${businessId}/default-money-account`,
+    {
+      method: 'PATCH',
+      token,
+      body: payload,
+    },
+  )
+}
+
+export type MoneyAccountMovement = {
+  id: string
+  type: 'SALE_INFLOW' | 'EXPENSE_OUTFLOW' | 'SUPPLIER_PAYMENT_OUTFLOW'
+  typeLabel: string
+  concept: string
+  date: string
+  amount: number
+  createdAt: string
+}
+
+export type MoneyAccountItem = {
+  id: string
+  businessId: string
+  name: string
+  kind: 'BANK' | 'CASH_VAULT' | 'OTHER'
+  initialBalance: number
+  active: boolean
+  createdAt: string
+  isDefault: boolean
+  entries: number
+  outflows: number
+  balance: number
+  monthEntries: number
+  monthOutflows: number
+  movements: MoneyAccountMovement[]
+}
+
+export async function getBusinessPayables({
+  token,
+  businessId,
+}: {
+  token: string
+  businessId: string
+}) {
+  return request<PayablesSummary>(`/businesses/${businessId}/payables`, {
+    method: 'GET',
+    token,
+  })
+}
+
 
 export type BusinessItem = {
   id: string
@@ -84,12 +211,18 @@ export type CounterpartyPaymentItem = {
   id: string
   counterpartyId: string
   purchaseId: string | null
+  moneyAccountId: string | null
   date: string
   amount: string
   method: 'EFECTIVO' | 'TARJETA' | 'TRANSFERENCIA' | 'APP' | 'OTRO'
   evidenceUrl: string | null
   notes: string | null
   createdAt: string
+  moneyAccount?: {
+    id: string
+    name: string
+    active: boolean
+  } | null
 }
 
 export type PayablesSummary = {
@@ -320,18 +453,6 @@ export async function deleteBusinessCounterparty({
   )
 }
 
-export async function getBusinessPayables({
-  token,
-  businessId,
-}: {
-  token: string
-  businessId: string
-}) {
-  return request<PayablesSummary>(`/businesses/${businessId}/payables`, {
-    method: 'GET',
-    token,
-  })
-}
 
 export async function createBusinessPurchase({
   token,
@@ -369,6 +490,7 @@ export async function createPurchasePayment({
     date: string
     amount: number
     method: 'EFECTIVO' | 'TARJETA' | 'TRANSFERENCIA' | 'APP' | 'OTRO'
+    moneyAccountId?: string
     evidenceUrl?: string
     notes?: string
     locationId?: string
@@ -586,6 +708,7 @@ export type ExpenseItem = {
   locationId: string
   categoryId: string
   counterpartyId: string | null
+  moneyAccountId: string | null
   date: string
   concept: string
   amount: string
@@ -599,6 +722,11 @@ export type ExpenseItem = {
   createdAt: string
   category: ExpenseCategory
   counterparty: Counterparty | null
+  moneyAccount?: {
+    id: string
+    name: string
+    active: boolean
+  } | null
 }
 
 export type PnlSummary = {
@@ -644,6 +772,7 @@ export async function createExpense({
     amount: number
     method: 'EFECTIVO' | 'TARJETA' | 'TRANSFERENCIA' | 'OTRO'
     counterpartyId?: string
+    moneyAccountId?: string
     paidFromCash?: boolean
     notes?: string
   }

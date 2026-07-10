@@ -4,6 +4,7 @@ import {
   approveRequisition,
   cancelRequisition,
   createBusinessCounterparty,
+  createBusinessMoneyAccount,
   createBusinessItem,
   createBusinessMember,
   createBusinessPurchase,
@@ -21,6 +22,7 @@ import {
   getEnvelopeMovements,
   getExpenseCategories,
   getBusinessCounterparties,
+  getBusinessMoneyAccounts,
   getBusinessItems,
   getDashboardSummary,
   getBusinessMembers,
@@ -31,6 +33,8 @@ import {
   getPurchasePayments,
   payEnvelope,
   patchBusinessCounterparty,
+  patchBusinessDefaultMoneyAccount,
+  patchBusinessMoneyAccount,
   patchBusinessItem,
   patchRequisition,
   receiveRequisition,
@@ -48,6 +52,7 @@ import {
   type ExpenseCategory,
   type ExpenseItem,
   type EnvelopesSummary,
+  type MoneyAccountItem,
   type PayablesSummary,
   type PnlSummary,
   type RequisitionItem,
@@ -64,7 +69,7 @@ const navGroups = [
   },
   {
     title: 'Dinero',
-    items: ['Proveedores y adeudos', 'Nómina', 'Gastos', 'Sobres', 'P&L y reportes'],
+    items: ['Proveedores y adeudos', 'Cuentas', 'Nómina', 'Gastos', 'Sobres', 'P&L y reportes'],
   },
 ]
 const configGroup = {
@@ -165,6 +170,7 @@ type ExpenseDraft = {
   amount: number
   method: 'EFECTIVO' | 'TARJETA' | 'TRANSFERENCIA' | 'OTRO'
   counterpartyId: string
+  moneyAccountId: string
   paidFromCash: boolean
 }
 
@@ -215,6 +221,7 @@ type PayablePaymentDraft = {
   date: string
   amount: number
   method: 'EFECTIVO' | 'TARJETA' | 'TRANSFERENCIA' | 'APP' | 'OTRO'
+  moneyAccountId: string
   notes: string
   locationId: string
   categoryId: string
@@ -682,6 +689,17 @@ export function AppShellPage() {
   const [loadingPayables, setLoadingPayables] = useState(false)
   const [payablesError, setPayablesError] = useState('')
   const [payablesSuccess, setPayablesSuccess] = useState('')
+  const [moneyAccounts, setMoneyAccounts] = useState<MoneyAccountItem[]>([])
+  const [loadingMoneyAccounts, setLoadingMoneyAccounts] = useState(false)
+  const [moneyAccountsError, setMoneyAccountsError] = useState('')
+  const [moneyAccountsSuccess, setMoneyAccountsSuccess] = useState('')
+  const [showMoneyAccountForm, setShowMoneyAccountForm] = useState(false)
+  const [newMoneyAccountName, setNewMoneyAccountName] = useState('')
+  const [newMoneyAccountKind, setNewMoneyAccountKind] = useState<'BANK' | 'CASH_VAULT' | 'OTHER'>('BANK')
+  const [newMoneyAccountInitialBalance, setNewMoneyAccountInitialBalance] = useState(0)
+  const [expandedMoneyAccountId, setExpandedMoneyAccountId] = useState('')
+  const [moneyAccountsMonth, setMoneyAccountsMonth] = useState(getCurrentMonthInput())
+  const [defaultMoneyAccountId, setDefaultMoneyAccountId] = useState('')
   const [savingPayables, setSavingPayables] = useState(false)
   const [showPayableForm, setShowPayableForm] = useState(false)
   const [showInlinePayableCounterpartyForm, setShowInlinePayableCounterpartyForm] = useState(false)
@@ -733,6 +751,7 @@ export function AppShellPage() {
     amount: 0,
     method: 'EFECTIVO',
     counterpartyId: '',
+    moneyAccountId: '',
     paidFromCash: false,
   })
   const [payableCreateDraft, setPayableCreateDraft] = useState<PayableCreateDraft>({
@@ -938,21 +957,25 @@ export function AppShellPage() {
     Promise.all([
       getExpenseCategories({ token, businessId: selectedBusinessId }),
       getBusinessCounterparties({ token, businessId: selectedBusinessId }),
+      getBusinessMoneyAccounts({ token, businessId: selectedBusinessId, month: gastosMonth }),
     ])
-      .then(([categoriesResponse, counterpartiesResponse]) => {
+      .then(([categoriesResponse, counterpartiesResponse, moneyAccountsResponse]) => {
         const nextCategories = categoriesResponse.items || []
         setExpenseCategories(nextCategories)
         setCounterparties(counterpartiesResponse.counterparties || [])
+        setMoneyAccounts(moneyAccountsResponse.items || [])
+        setDefaultMoneyAccountId(moneyAccountsResponse.defaultMoneyAccountId || '')
         setExpenseDraft((prev) => ({
           ...prev,
           categoryId: prev.categoryId || nextCategories[0]?.id || '',
+          moneyAccountId: prev.moneyAccountId || moneyAccountsResponse.defaultMoneyAccountId || '',
         }))
       })
       .catch((error) => {
         setExpenseCategories([])
         setExpensesError(error instanceof Error ? error.message : 'No se pudieron cargar categorías de gasto')
       })
-  }, [activeItem, selectedBusinessId, token])
+  }, [activeItem, gastosMonth, selectedBusinessId, token])
 
   useEffect(() => {
     if (activeItem !== 'Gastos' || !token || !selectedLocationId) return
@@ -982,13 +1005,16 @@ export function AppShellPage() {
       getBusinessPayables({ token, businessId: selectedBusinessId }),
       getBusinessCounterparties({ token, businessId: selectedBusinessId }),
       getExpenseCategories({ token, businessId: selectedBusinessId }),
+      getBusinessMoneyAccounts({ token, businessId: selectedBusinessId, month: getCurrentMonthInput() }),
     ])
-      .then(([payablesResponse, counterpartiesResponse, categoriesResponse]) => {
+      .then(([payablesResponse, counterpartiesResponse, categoriesResponse, moneyAccountsResponse]) => {
         setPayablesSummary(payablesResponse)
         const nextCounterparties = counterpartiesResponse.counterparties || []
         setCounterparties(nextCounterparties)
         const nextCategories = categoriesResponse.items || []
         setExpenseCategories(nextCategories)
+        setMoneyAccounts(moneyAccountsResponse.items || [])
+        setDefaultMoneyAccountId(moneyAccountsResponse.defaultMoneyAccountId || '')
         setPayableCreateDraft((prev) => ({
           ...prev,
           counterpartyId: prev.counterpartyId || nextCounterparties.find((item) => item.active)?.id || '',
@@ -1001,6 +1027,26 @@ export function AppShellPage() {
       })
       .finally(() => setLoadingPayables(false))
   }, [activeItem, selectedBusinessId, selectedLocationId, token])
+
+  useEffect(() => {
+    if (activeItem !== 'Cuentas' || !token || !selectedBusinessId) return
+    setLoadingMoneyAccounts(true)
+    setMoneyAccountsError('')
+    getBusinessMoneyAccounts({
+      token,
+      businessId: selectedBusinessId,
+      month: moneyAccountsMonth,
+    })
+      .then((response) => {
+        setMoneyAccounts(response.items || [])
+        setDefaultMoneyAccountId(response.defaultMoneyAccountId || '')
+      })
+      .catch((error) => {
+        setMoneyAccounts([])
+        setMoneyAccountsError(error instanceof Error ? error.message : 'No se pudieron cargar las cuentas')
+      })
+      .finally(() => setLoadingMoneyAccounts(false))
+  }, [activeItem, moneyAccountsMonth, selectedBusinessId, token])
 
   useEffect(() => {
     if (activeItem !== 'P&L y reportes' || !token || !selectedLocationId) return
@@ -1201,6 +1247,7 @@ export function AppShellPage() {
     return groups.sort((a, b) => a.providerName.localeCompare(b.providerName, 'es'))
   }, [requisitionCounterpartyById, requisitionLinesWithItem])
   const gastosMonthLabel = useMemo(() => formatMonthLabel(gastosMonth), [gastosMonth])
+  const moneyAccountsMonthLabel = useMemo(() => formatMonthLabel(moneyAccountsMonth), [moneyAccountsMonth])
   const pnlMonthLabel = useMemo(() => formatMonthLabel(pnlMonth), [pnlMonth])
   const expensesMonthTotal = useMemo(
     () => expenses.reduce((sum, item) => sum + asDecimal(item.amount), 0),
@@ -1213,6 +1260,7 @@ export function AppShellPage() {
     () => counterparties.filter((counterparty) => counterparty.active),
     [counterparties],
   )
+  const activeMoneyAccounts = useMemo(() => moneyAccounts.filter((account) => account.active), [moneyAccounts])
   const pnlOperativeBreakdown = useMemo(
     () => (pnlSummary?.desgloseCategorias || []).filter((item) => item.kind === 'OPERATIVO'),
     [pnlSummary],
@@ -1329,6 +1377,7 @@ export function AppShellPage() {
         date: getTodayDateInput(),
         amount: saldo,
         method: 'TRANSFERENCIA',
+        moneyAccountId: defaultMoneyAccountId || '',
         notes: '',
         locationId: selectedLocationId,
         categoryId: expenseCategories.find((category) => category.name === 'Otros gastos')?.id || expenseCategories[0]?.id || '',
@@ -1426,6 +1475,10 @@ export function AppShellPage() {
       setPayablesError('Captura un monto válido para abonar')
       return
     }
+    if ((draft.method === 'TARJETA' || draft.method === 'TRANSFERENCIA') && !draft.moneyAccountId) {
+      setPayablesError('Selecciona la cuenta de dinero para este abono')
+      return
+    }
     if (purchase.kind === 'LOAN' && !draft.categoryId) {
       setPayablesError('Selecciona una categoría para el gasto del préstamo')
       return
@@ -1442,6 +1495,10 @@ export function AppShellPage() {
           date: draft.date,
           amount: draft.amount,
           method: draft.method,
+          moneyAccountId:
+            draft.method === 'TARJETA' || draft.method === 'TRANSFERENCIA'
+              ? draft.moneyAccountId || undefined
+              : undefined,
           notes: draft.notes.trim() || undefined,
           locationId: draft.locationId || undefined,
           categoryId: purchase.kind === 'LOAN' ? draft.categoryId || undefined : undefined,
@@ -1521,6 +1578,84 @@ export function AppShellPage() {
     return response
   }
 
+  async function refreshMoneyAccountsData() {
+    if (!token || !selectedBusinessId) return
+    const response = await getBusinessMoneyAccounts({
+      token,
+      businessId: selectedBusinessId,
+      month: moneyAccountsMonth,
+    })
+    setMoneyAccounts(response.items || [])
+    setDefaultMoneyAccountId(response.defaultMoneyAccountId || '')
+    return response
+  }
+
+  async function handleCreateMoneyAccount() {
+    if (!token || !selectedBusinessId) return
+    if (!newMoneyAccountName.trim()) {
+      setMoneyAccountsError('Nombre de cuenta es obligatorio')
+      return
+    }
+    setMoneyAccountsError('')
+    setMoneyAccountsSuccess('')
+    try {
+      await createBusinessMoneyAccount({
+        token,
+        businessId: selectedBusinessId,
+        payload: {
+          name: newMoneyAccountName.trim(),
+          kind: newMoneyAccountKind,
+          initialBalance: newMoneyAccountInitialBalance,
+        },
+      })
+      await refreshMoneyAccountsData()
+      setNewMoneyAccountName('')
+      setNewMoneyAccountKind('BANK')
+      setNewMoneyAccountInitialBalance(0)
+      setShowMoneyAccountForm(false)
+      setMoneyAccountsSuccess('Cuenta creada ✓')
+    } catch (error) {
+      setMoneyAccountsError(error instanceof Error ? error.message : 'No se pudo crear la cuenta')
+    }
+  }
+
+  async function handleToggleMoneyAccountActive(account: MoneyAccountItem) {
+    if (!token || !selectedBusinessId) return
+    setMoneyAccountsError('')
+    setMoneyAccountsSuccess('')
+    try {
+      await patchBusinessMoneyAccount({
+        token,
+        businessId: selectedBusinessId,
+        moneyAccountId: account.id,
+        payload: { active: !account.active },
+      })
+      await refreshMoneyAccountsData()
+      setMoneyAccountsSuccess(account.active ? 'Cuenta desactivada ✓' : 'Cuenta activada ✓')
+    } catch (error) {
+      setMoneyAccountsError(error instanceof Error ? error.message : 'No se pudo actualizar la cuenta')
+    }
+  }
+
+  async function handleSetDefaultMoneyAccount(moneyAccountId: string) {
+    if (!token || !selectedBusinessId) return
+    setMoneyAccountsError('')
+    setMoneyAccountsSuccess('')
+    try {
+      await patchBusinessDefaultMoneyAccount({
+        token,
+        businessId: selectedBusinessId,
+        payload: { moneyAccountId },
+      })
+      setDefaultMoneyAccountId(moneyAccountId)
+      setExpenseDraft((prev) => ({ ...prev, moneyAccountId: prev.moneyAccountId || moneyAccountId }))
+      await refreshMoneyAccountsData()
+      setMoneyAccountsSuccess('Cuenta por default actualizada ✓')
+    } catch (error) {
+      setMoneyAccountsError(error instanceof Error ? error.message : 'No se pudo actualizar la cuenta por default')
+    }
+  }
+
   async function refreshEnvelopesData() {
     if (!token || !selectedBusinessId) return
     const response = await getBusinessEnvelopes({ token, businessId: selectedBusinessId })
@@ -1536,6 +1671,7 @@ export function AppShellPage() {
       amount: 0,
       method: 'EFECTIVO',
       counterpartyId: '',
+      moneyAccountId: defaultMoneyAccountId || '',
       paidFromCash: false,
     })
   }
@@ -1545,6 +1681,13 @@ export function AppShellPage() {
     if (!token || !selectedLocationId) return
     if (!expenseDraft.categoryId || !expenseDraft.concept.trim()) {
       setExpensesError('Categoría y concepto son obligatorios')
+      return
+    }
+    if (
+      (expenseDraft.method === 'TARJETA' || expenseDraft.method === 'TRANSFERENCIA') &&
+      !expenseDraft.moneyAccountId
+    ) {
+      setExpensesError('Selecciona la cuenta de dinero para este gasto')
       return
     }
     setSavingExpense(true)
@@ -1561,6 +1704,10 @@ export function AppShellPage() {
           amount: expenseDraft.amount,
           method: expenseDraft.method,
           counterpartyId: expenseDraft.counterpartyId || undefined,
+          moneyAccountId:
+            expenseDraft.method === 'TARJETA' || expenseDraft.method === 'TRANSFERENCIA'
+              ? expenseDraft.moneyAccountId || undefined
+              : undefined,
           paidFromCash: expenseDraft.paidFromCash,
         },
       })
@@ -4356,6 +4503,10 @@ export function AppShellPage() {
                                     [purchase.id]: {
                                       ...draft,
                                       method: event.target.value as PayablePaymentDraft['method'],
+                                      moneyAccountId:
+                                        event.target.value === 'TARJETA' || event.target.value === 'TRANSFERENCIA'
+                                          ? draft.moneyAccountId || defaultMoneyAccountId || ''
+                                          : '',
                                     },
                                   }))
                                 }
@@ -4366,6 +4517,24 @@ export function AppShellPage() {
                                 <option value="APP">APP</option>
                                 <option value="OTRO">OTRO</option>
                               </select>
+                              {draft.method === 'TARJETA' || draft.method === 'TRANSFERENCIA' ? (
+                                <select
+                                  value={draft.moneyAccountId}
+                                  onChange={(event) =>
+                                    setPayablePaymentDraftByPurchase((prev) => ({
+                                      ...prev,
+                                      [purchase.id]: { ...draft, moneyAccountId: event.target.value },
+                                    }))
+                                  }
+                                >
+                                  <option value="">Selecciona cuenta</option>
+                                  {activeMoneyAccounts.map((account) => (
+                                    <option key={account.id} value={account.id}>
+                                      {account.name}
+                                    </option>
+                                  ))}
+                                </select>
+                              ) : null}
                               {purchase.kind === 'LOAN' ? (
                                 <select
                                   value={draft.categoryId}
@@ -4397,7 +4566,10 @@ export function AppShellPage() {
                                 <div key={payment.id} className="q-payable-history-row">
                                   <span>{formatDateFromIsoString(payment.date)}</span>
                                   <strong className="q-mono">{formatMoney(asDecimal(payment.amount))}</strong>
-                                  <span>{payment.method}</span>
+                                  <span>
+                                    {payment.method}
+                                    {payment.moneyAccount?.name ? ` · ${payment.moneyAccount.name}` : ''}
+                                  </span>
                                 </div>
                               ))}
                             </div>
@@ -4405,6 +4577,170 @@ export function AppShellPage() {
                         </article>
                       )
                     })}
+                  </div>
+                ) : null}
+              </article>
+            )
+          })}
+        </div>
+      ) : null}
+    </section>
+  )
+
+  const renderMoneyAccounts = () => (
+    <section className="q-shift-closings">
+      <header className="q-section-header">
+        <div>
+          <h1>Cuentas</h1>
+          <p>Saldo de cuentas donde cae terminal y desde donde salen pagos.</p>
+        </div>
+        <div className="q-actions-row">
+          <div className="q-month-nav">
+            <button
+              type="button"
+              className="q-chip-btn"
+              onClick={() => setMoneyAccountsMonth((prev) => shiftMonth(prev, -1))}
+            >
+              ←
+            </button>
+            <strong>{moneyAccountsMonthLabel}</strong>
+            <button
+              type="button"
+              className="q-chip-btn"
+              onClick={() => setMoneyAccountsMonth((prev) => shiftMonth(prev, 1))}
+            >
+              →
+            </button>
+          </div>
+          {canCreateEnvelope ? (
+            <button
+              className="q-btn q-btn-inline"
+              type="button"
+              onClick={() => setShowMoneyAccountForm((prev) => !prev)}
+            >
+              {showMoneyAccountForm ? 'Cerrar formulario' : 'Nueva cuenta'}
+            </button>
+          ) : null}
+        </div>
+      </header>
+
+      {moneyAccountsSuccess ? <p className="q-success-text">{moneyAccountsSuccess}</p> : null}
+      {moneyAccountsError ? <p className="q-error-text">{moneyAccountsError}</p> : null}
+
+      {showMoneyAccountForm ? (
+        <div className="q-card q-payables-form">
+          <div className="q-field-grid-3">
+            <label className="q-field">
+              Nombre
+              <input
+                type="text"
+                value={newMoneyAccountName}
+                onChange={(event) => setNewMoneyAccountName(event.target.value)}
+              />
+            </label>
+            <label className="q-field">
+              Tipo
+              <select
+                value={newMoneyAccountKind}
+                onChange={(event) =>
+                  setNewMoneyAccountKind(event.target.value as 'BANK' | 'CASH_VAULT' | 'OTHER')
+                }
+              >
+                <option value="BANK">Banco</option>
+                <option value="CASH_VAULT">Bóveda</option>
+                <option value="OTHER">Otra</option>
+              </select>
+            </label>
+            <label className="q-field">
+              Saldo inicial
+              <input
+                type="number"
+                min={0}
+                step="0.01"
+                value={newMoneyAccountInitialBalance}
+                onChange={(event) => setNewMoneyAccountInitialBalance(asNumber(event.target.value))}
+              />
+            </label>
+          </div>
+          <button className="q-btn q-btn-inline" type="button" onClick={() => handleCreateMoneyAccount()}>
+            Guardar cuenta
+          </button>
+        </div>
+      ) : null}
+
+      {loadingMoneyAccounts ? <p>Cargando cuentas...</p> : null}
+
+      {!loadingMoneyAccounts && !moneyAccounts.length ? (
+        <section className="q-card q-empty-state">
+          <h3>No hay cuentas configuradas</h3>
+          <p>Crea la primera cuenta para rastrear entradas y salidas.</p>
+        </section>
+      ) : null}
+
+      {!loadingMoneyAccounts && moneyAccounts.length ? (
+        <div className="q-payables-grid">
+          {moneyAccounts.map((account) => {
+            const isExpanded = expandedMoneyAccountId === account.id
+            return (
+              <article key={account.id} className="q-card q-payable-card">
+                <div className="q-payable-top">
+                  <div>
+                    <h3>{account.name}</h3>
+                    <span className={`q-chip ${account.active ? 'ok' : 'falt'}`}>
+                      {account.active ? 'Activa' : 'Inactiva'}
+                    </span>
+                    {account.isDefault ? <span className="q-chip pending">Default terminal</span> : null}
+                  </div>
+                  <strong className="q-mono q-payable-saldo">{formatMoney(account.balance)}</strong>
+                </div>
+                <p className="q-table-muted">
+                  Entradas mes: <strong className="q-mono">{formatMoney(account.monthEntries)}</strong> · Salidas mes:{' '}
+                  <strong className="q-mono">{formatMoney(account.monthOutflows)}</strong>
+                </p>
+                <div className="q-table-actions">
+                  <button
+                    type="button"
+                    className="q-link-btn"
+                    onClick={() => setExpandedMoneyAccountId((prev) => (prev === account.id ? '' : account.id))}
+                  >
+                    {isExpanded ? 'Ocultar movimientos' : 'Ver movimientos'}
+                  </button>
+                  {canCreateEnvelope ? (
+                    <button type="button" className="q-link-btn" onClick={() => handleSetDefaultMoneyAccount(account.id)}>
+                      {account.isDefault ? 'Cuenta default actual' : 'Marcar como default'}
+                    </button>
+                  ) : null}
+                  {canCreateEnvelope ? (
+                    <button
+                      type="button"
+                      className="q-link-btn"
+                      onClick={() => handleToggleMoneyAccountActive(account)}
+                    >
+                      {account.active ? 'Desactivar' : 'Activar'}
+                    </button>
+                  ) : null}
+                </div>
+                {isExpanded ? (
+                  <div className="q-payable-history-list">
+                    {!account.movements.length ? (
+                      <p className="q-table-muted">Sin movimientos en este periodo.</p>
+                    ) : (
+                      account.movements.map((movement) => {
+                        const isOutflow = movement.type !== 'SALE_INFLOW'
+                        return (
+                          <div key={`${account.id}-${movement.id}`} className="q-payable-history-row">
+                            <span>
+                              {formatDateFromIsoString(movement.date)} · {movement.concept}
+                            </span>
+                            <strong className="q-mono">
+                              {isOutflow ? '-' : '+'}
+                              {formatMoney(movement.amount)}
+                            </strong>
+                            <span>{movement.typeLabel}</span>
+                          </div>
+                        )
+                      })
+                    )}
                   </div>
                 ) : null}
               </article>
@@ -4504,6 +4840,10 @@ export function AppShellPage() {
                   setExpenseDraft((prev) => ({
                     ...prev,
                     method: event.target.value as ExpenseDraft['method'],
+                    moneyAccountId:
+                      event.target.value === 'TARJETA' || event.target.value === 'TRANSFERENCIA'
+                        ? prev.moneyAccountId || defaultMoneyAccountId || ''
+                        : '',
                   }))
                 }
               >
@@ -4514,6 +4854,25 @@ export function AppShellPage() {
               </select>
             </label>
           </div>
+          {expenseDraft.method === 'TARJETA' || expenseDraft.method === 'TRANSFERENCIA' ? (
+            <div className="q-field-grid-3">
+              <label className="q-field">
+                Cuenta de dinero
+                <select
+                  value={expenseDraft.moneyAccountId}
+                  onChange={(event) => setExpenseDraft((prev) => ({ ...prev, moneyAccountId: event.target.value }))}
+                  required
+                >
+                  <option value="">Selecciona cuenta</option>
+                  {activeMoneyAccounts.map((account) => (
+                    <option key={account.id} value={account.id}>
+                      {account.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+          ) : null}
           <div className="q-field-grid-3">
             <label className="q-field">
               Concepto
@@ -4609,6 +4968,7 @@ export function AppShellPage() {
                   </td>
                   <td>
                     <span>{expense.method}</span>
+                    {expense.moneyAccount?.name ? <span className="q-table-muted"> · {expense.moneyAccount.name}</span> : null}
                     {expense.source !== 'MANUAL' ? <span className="q-chip q-chip-auto">auto</span> : null}
                   </td>
                   <td className="is-right q-mono">{formatMoney(asDecimal(expense.amount))}</td>
@@ -5460,6 +5820,7 @@ export function AppShellPage() {
           {!loadingUser && activeItem === 'Cierres de turno' ? renderShiftClosings() : null}
           {!loadingUser && activeItem === 'Requisiciones' ? renderRequisitions() : null}
           {!loadingUser && activeItem === 'Proveedores y adeudos' ? renderPayables() : null}
+          {!loadingUser && activeItem === 'Cuentas' ? renderMoneyAccounts() : null}
           {!loadingUser && activeItem === 'Gastos' ? renderExpenses() : null}
           {!loadingUser && activeItem === 'Sobres' ? renderEnvelopes() : null}
           {!loadingUser && activeItem === 'P&L y reportes' ? renderPnl() : null}
@@ -5471,6 +5832,7 @@ export function AppShellPage() {
           activeItem !== 'Cierres de turno' &&
           activeItem !== 'Requisiciones' &&
           activeItem !== 'Proveedores y adeudos' &&
+          activeItem !== 'Cuentas' &&
           activeItem !== 'Gastos' &&
           activeItem !== 'Sobres' &&
           activeItem !== 'P&L y reportes' &&
