@@ -145,6 +145,7 @@ model ShiftClosing {
   openingCash   Decimal  @default(0) @db.Decimal(12, 2)
   expectedCash  Decimal  @db.Decimal(12, 2) // ventas efectivo + fondo - retiros
   countedCash   Decimal  @db.Decimal(12, 2) // arqueo físico
+  cashBreakdown Json?
   difference    Decimal  @db.Decimal(12, 2) // sobrante(+) / faltante(-)
   cashWithdrawn Decimal  @default(0) @db.Decimal(12, 2) // retiros a bóveda/depósito
   ticketCount   Int?

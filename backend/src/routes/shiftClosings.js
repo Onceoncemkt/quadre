@@ -21,6 +21,7 @@ const createShiftClosingSchema = z.object({
   openingCash: z.coerce.number().finite(),
   cashWithdrawn: z.coerce.number().finite(),
   countedCash: z.coerce.number().finite(),
+  cashBreakdown: z.record(z.string(), z.coerce.number().int().nonnegative()).optional(),
   ticketCount: z.coerce.number().int().nonnegative().optional(),
   notes: z.string().optional(),
   lines: z
@@ -43,6 +44,18 @@ function parseDateOnly(dateString) {
   const date = new Date(`${dateString}T00:00:00.000Z`);
   if (Number.isNaN(date.getTime())) return null;
   return date;
+}
+
+function getCashBreakdownTotal(cashBreakdown) {
+  return Number(
+    Object.entries(cashBreakdown || {})
+      .reduce((sum, [denominationKey, quantity]) => {
+        const denomination = Number.parseFloat(String(denominationKey));
+        if (!Number.isFinite(denomination)) return sum;
+        return sum + denomination * Number(quantity || 0);
+      }, 0)
+      .toFixed(2),
+  );
 }
 
 async function getMembershipForLocation({ userId, locationId }) {
@@ -126,6 +139,21 @@ shiftClosingsRouter.post('/locations/:locationId/shift-closings', authMiddleware
       (parsed.data.openingCash + efectivoVentas - parsed.data.cashWithdrawn).toFixed(2),
     );
     const difference = Number((parsed.data.countedCash - expectedCash).toFixed(2));
+    const cashBreakdown = parsed.data.cashBreakdown || null;
+    if (cashBreakdown) {
+      const breakdownTotal = getCashBreakdownTotal(cashBreakdown);
+      const countedCash = Number(Number(parsed.data.countedCash).toFixed(2));
+      const gap = Math.abs(breakdownTotal - countedCash);
+      if (gap > 0.01) {
+        res.status(400).json({
+          ok: false,
+          error: `El desglose por denominaciones suma ${toMoney(
+            breakdownTotal,
+          )} y no coincide con countedCash ${toMoney(countedCash)}`,
+        });
+        return;
+      }
+    }
 
     const created = await prisma.$transaction(async (tx) => {
       const shift = await tx.shift.create({
@@ -144,6 +172,7 @@ shiftClosingsRouter.post('/locations/:locationId/shift-closings', authMiddleware
           openingCash: toMoney(parsed.data.openingCash),
           expectedCash: toMoney(expectedCash),
           countedCash: toMoney(parsed.data.countedCash),
+          cashBreakdown,
           difference: toMoney(difference),
           cashWithdrawn: toMoney(parsed.data.cashWithdrawn),
           ticketCount: parsed.data.ticketCount,
