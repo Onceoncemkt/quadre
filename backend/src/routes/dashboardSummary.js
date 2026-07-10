@@ -98,6 +98,7 @@ dashboardSummaryRouter.get('/locations/:locationId/dashboard-summary', authMiddl
         where: {
           shift: {
             locationId,
+            voidedAt: null,
             date: {
               gte: todayStart,
               lt: tomorrowStart,
@@ -112,6 +113,7 @@ dashboardSummaryRouter.get('/locations/:locationId/dashboard-summary', authMiddl
         where: {
           shift: {
             locationId,
+            voidedAt: null,
             date: {
               gte: monthStart,
               lt: nextMonthStart,
