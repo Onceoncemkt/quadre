@@ -576,6 +576,7 @@ export function AppShellPage() {
   const [phoneCaptureCounterpartyId, setPhoneCaptureCounterpartyId] = useState('')
   const [phoneCaptureValue, setPhoneCaptureValue] = useState('')
   const [showRequisitionForm, setShowRequisitionForm] = useState(false)
+  const [showAllRequisitionItems, setShowAllRequisitionItems] = useState(false)
   const [savingRequisition, setSavingRequisition] = useState(false)
   const [requisitionFormError, setRequisitionFormError] = useState('')
   const [requisitionsSuccess, setRequisitionsSuccess] = useState('')
@@ -936,6 +937,33 @@ export function AppShellPage() {
     () => counterparties.filter((counterparty) => counterparty.active),
     [counterparties],
   )
+  const selectedRequisitionCounterparty = useMemo(
+    () => activeCounterparties.find((counterparty) => counterparty.id === newRequisitionDraft.counterpartyId) || null,
+    [activeCounterparties, newRequisitionDraft.counterpartyId],
+  )
+  const preferredRequisitionItems = useMemo(() => {
+    if (!selectedRequisitionCounterparty) return activeBusinessItems
+    return activeBusinessItems.filter((item) => item.defaultCounterpartyId === selectedRequisitionCounterparty.id)
+  }, [activeBusinessItems, selectedRequisitionCounterparty])
+  const hasPreferredRequisitionItems = useMemo(
+    () => preferredRequisitionItems.length > 0,
+    [preferredRequisitionItems],
+  )
+  const otherRequisitionItems = useMemo(() => {
+    if (!selectedRequisitionCounterparty) return []
+    return activeBusinessItems.filter((item) => item.defaultCounterpartyId !== selectedRequisitionCounterparty.id)
+  }, [activeBusinessItems, selectedRequisitionCounterparty])
+  const defaultVisibleRequisitionItems = useMemo(() => {
+    if (!selectedRequisitionCounterparty) return activeBusinessItems
+    if (!hasPreferredRequisitionItems) return activeBusinessItems
+    return showAllRequisitionItems ? activeBusinessItems : preferredRequisitionItems
+  }, [
+    activeBusinessItems,
+    hasPreferredRequisitionItems,
+    preferredRequisitionItems,
+    selectedRequisitionCounterparty,
+    showAllRequisitionItems,
+  ])
   const gastosMonthLabel = useMemo(() => formatMonthLabel(gastosMonth), [gastosMonth])
   const pnlMonthLabel = useMemo(() => formatMonthLabel(pnlMonth), [pnlMonth])
   const expensesMonthTotal = useMemo(
@@ -1540,6 +1568,7 @@ export function AppShellPage() {
       notes: '',
       lines: [{ itemId: '', qty: 1, unitPrice: 0 }],
     })
+    setShowAllRequisitionItems(false)
     setRequisitionFormError('')
   }
 
@@ -2598,12 +2627,13 @@ export function AppShellPage() {
                       Proveedor (opcional)
                       <select
                         value={newRequisitionDraft.counterpartyId}
-                        onChange={(event) =>
+                        onChange={(event) => {
                           setNewRequisitionDraft((prev) => ({
                             ...prev,
                             counterpartyId: event.target.value,
                           }))
-                        }
+                          setShowAllRequisitionItems(false)
+                        }}
                       >
                         <option value="">Sin asignar</option>
                         {activeCounterparties.map((counterparty) => (
@@ -2627,6 +2657,24 @@ export function AppShellPage() {
                   </div>
 
                   <h3>Líneas</h3>
+                  {selectedRequisitionCounterparty && hasPreferredRequisitionItems ? (
+                    <div className="q-actions-row">
+                      <button
+                        type="button"
+                        className="q-link-btn"
+                        onClick={() => setShowAllRequisitionItems((prev) => !prev)}
+                      >
+                        {showAllRequisitionItems
+                          ? `Mostrar solo insumos habituales de ${selectedRequisitionCounterparty.name}`
+                          : 'Mostrar todos los insumos'}
+                      </button>
+                    </div>
+                  ) : null}
+                  {selectedRequisitionCounterparty && !hasPreferredRequisitionItems ? (
+                    <p className="q-table-muted">
+                      Este proveedor no tiene insumos habituales — asígnalos desde el Catálogo.
+                    </p>
+                  ) : null}
                   {!activeBusinessItems.length ? (
                     <article className="q-card q-inline-quick-item">
                       <h4>No hay insumos en catálogo</h4>
@@ -2682,61 +2730,92 @@ export function AppShellPage() {
                   ) : null}
 
                   <div className="q-lines-wrap">
-                    {newRequisitionDraft.lines.map((line, index) => (
-                      <article className="q-line-row" key={`req-line-${index}`}>
-                        <label className="q-field">
-                          Insumo
-                          <select
-                            value={line.itemId}
-                            onChange={(event) => {
-                              const itemId = event.target.value
-                              const selectedItem = activeBusinessItems.find((item) => item.id === itemId)
-                              updateRequisitionLine(index, {
-                                itemId,
-                                unitPrice: selectedItem ? asDecimal(selectedItem.lastPrice) : 0,
-                              })
-                            }}
+                    {newRequisitionDraft.lines.map((line, index) => {
+                      const selectedLineItem = activeBusinessItems.find((item) => item.id === line.itemId) || null
+                      const lineVisibleItems =
+                        selectedLineItem &&
+                        !defaultVisibleRequisitionItems.some((item) => item.id === selectedLineItem.id)
+                          ? [selectedLineItem, ...defaultVisibleRequisitionItems]
+                          : defaultVisibleRequisitionItems
+                      const hasOtherGroup =
+                        selectedRequisitionCounterparty && !showAllRequisitionItems && hasPreferredRequisitionItems
+                      return (
+                        <article className="q-line-row" key={`req-line-${index}`}>
+                          <label className="q-field">
+                            Insumo
+                            <select
+                              value={line.itemId}
+                              onChange={(event) => {
+                                const itemId = event.target.value
+                                const selectedItem = activeBusinessItems.find((item) => item.id === itemId)
+                                updateRequisitionLine(index, {
+                                  itemId,
+                                  unitPrice: selectedItem ? asDecimal(selectedItem.lastPrice) : 0,
+                                })
+                              }}
+                            >
+                              <option value="">Selecciona un insumo</option>
+                              {hasOtherGroup ? (
+                                <>
+                                  <optgroup
+                                    label={`Habituales de ${selectedRequisitionCounterparty.name}`}
+                                  >
+                                    {preferredRequisitionItems.map((item) => (
+                                      <option key={item.id} value={item.id}>
+                                        {item.name} ({item.unit})
+                                      </option>
+                                    ))}
+                                  </optgroup>
+                                  <optgroup label="Otros insumos">
+                                    {otherRequisitionItems.map((item) => (
+                                      <option key={item.id} value={item.id}>
+                                        {item.name} ({item.unit})
+                                      </option>
+                                    ))}
+                                  </optgroup>
+                                </>
+                              ) : (
+                                lineVisibleItems.map((item) => (
+                                  <option key={item.id} value={item.id}>
+                                    {item.name} ({item.unit})
+                                  </option>
+                                ))
+                              )}
+                            </select>
+                          </label>
+                          <label className="q-field">
+                            Cantidad
+                            <input
+                              type="number"
+                              min={0}
+                              step="0.001"
+                              value={line.qty}
+                              onChange={(event) => updateRequisitionLine(index, { qty: asNumber(event.target.value) })}
+                            />
+                          </label>
+                          <label className="q-field">
+                            Precio unitario
+                            <input
+                              type="number"
+                              min={0}
+                              step="0.01"
+                              value={line.unitPrice}
+                              onChange={(event) =>
+                                updateRequisitionLine(index, { unitPrice: asNumber(event.target.value) })
+                              }
+                            />
+                          </label>
+                          <button
+                            type="button"
+                            className="q-link-btn"
+                            onClick={() => removeRequisitionLine(index)}
+                            disabled={newRequisitionDraft.lines.length <= 1}
                           >
-                            <option value="">Selecciona un insumo</option>
-                            {activeBusinessItems.map((item) => (
-                              <option key={item.id} value={item.id}>
-                                {item.name} ({item.unit})
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                        <label className="q-field">
-                          Cantidad
-                          <input
-                            type="number"
-                            min={0}
-                            step="0.001"
-                            value={line.qty}
-                            onChange={(event) => updateRequisitionLine(index, { qty: asNumber(event.target.value) })}
-                          />
-                        </label>
-                        <label className="q-field">
-                          Precio unitario
-                          <input
-                            type="number"
-                            min={0}
-                            step="0.01"
-                            value={line.unitPrice}
-                            onChange={(event) =>
-                              updateRequisitionLine(index, { unitPrice: asNumber(event.target.value) })
-                            }
-                          />
-                        </label>
-                        <button
-                          type="button"
-                          className="q-link-btn"
-                          onClick={() => removeRequisitionLine(index)}
-                          disabled={newRequisitionDraft.lines.length <= 1}
-                        >
-                          Quitar
-                        </button>
-                      </article>
-                    ))}
+                            Quitar
+                          </button>
+                        </article>
+                      )
+                    })}
                   </div>
                   <button
                     type="button"
