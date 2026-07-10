@@ -356,6 +356,11 @@ body {
   color: var(--tinta2);
 }
 
+.q-chip.voided {
+  background: #eceff2;
+  color: #5b6670;
+}
+
 .q-table-actions {
   display: flex;
   flex-wrap: wrap;
@@ -384,6 +389,21 @@ body {
 .q-requisition-detail-row td {
   padding: 0;
   background: #f8fafb;
+}
+
+.q-closing-detail-row td {
+  padding: 0;
+  background: #f8fafb;
+}
+
+.q-closing-detail {
+  display: grid;
+  gap: 6px;
+  padding: 12px 14px;
+}
+
+.q-closing-detail p {
+  margin: 0;
 }
 
 .q-requisition-detail {
