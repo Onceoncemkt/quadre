@@ -149,6 +149,7 @@ export type RequisitionItem = {
   estimatedTotal: string
   receivedTotal: string | null
   notes: string | null
+  expectedDate: string | null
   lines: RequisitionLine[]
   counterparty: Counterparty | null
   requestedBy: { id: string; name: string } | null
@@ -426,6 +427,7 @@ export async function createRequisition({
   payload: {
     counterpartyId?: string
     notes?: string
+    expectedDate?: string
     lines: Array<{ itemId: string; qty: number; unitPrice?: number }>
   }
 }) {
@@ -445,6 +447,7 @@ export async function createRequisitionBatch({
   locationId: string
   payload: {
     notes?: string
+    expectedDate?: string
     lines: Array<{ itemId: string; qty: number; unitPrice?: number }>
   }
 }) {
@@ -496,6 +499,7 @@ export async function receiveRequisition({
   requisitionId: string
   payload: {
     counterpartyId?: string
+    receivedDate?: string
     lines: Array<{ lineId: string; receivedQty: number; actualPrice: number }>
   }
 }) {
