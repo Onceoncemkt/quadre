@@ -418,6 +418,24 @@ body {
   gap: 8px;
 }
 
+.q-requisition-success-actions {
+  display: grid;
+  gap: 6px;
+}
+
+.q-requisition-summary-modal {
+  width: min(880px, 100%);
+  display: grid;
+  gap: 12px;
+}
+
+.q-requisition-summary-image {
+  width: 100%;
+  border: 1px solid var(--linea);
+  border-radius: 12px;
+  background: var(--papel);
+}
+
 .q-month-nav {
   display: inline-flex;
   align-items: center;
@@ -882,6 +900,24 @@ body {
 
 .q-receive-total {
   margin: 0;
+  font-weight: 700;
+}
+
+.q-field-hint {
+  margin: -6px 0 0;
+  color: var(--gris);
+  font-size: 12px;
+}
+
+.q-requisition-expected {
+  color: var(--gris);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.q-requisition-expected.is-overdue,
+.q-requisition-expected-detail.is-overdue {
+  color: var(--falt);
   font-weight: 700;
 }
 

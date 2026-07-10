@@ -133,6 +133,7 @@ type RequisitionLineDraft = {
 type NewRequisitionDraft = {
   counterpartyId: string
   notes: string
+  expectedDate: string
   lines: RequisitionLineDraft[]
 }
 
@@ -147,6 +148,7 @@ type ReceiveLineDraft = {
 
 type ReceiveDraft = {
   counterpartyId: string
+  receivedDate: string
   lines: ReceiveLineDraft[]
 }
 
@@ -227,6 +229,24 @@ type RequisitionAssignDraft = {
   counterpartyId: string
   showInlineCreate: boolean
 }
+type RequisitionTicketLine = {
+  qty: number
+  unit: string
+  name: string
+  subtotal: number
+}
+type RequisitionTicketGroup = {
+  providerName: string
+  lines: RequisitionTicketLine[]
+  subtotal: number
+}
+type RequisitionTicketSummary = {
+  businessName: string
+  dateLabel: string
+  dateKey: string
+  groups: RequisitionTicketGroup[]
+  total: number
+}
 
 const requisitionFilterOptions: Array<{ key: RequisitionsFilter; label: string }> = [
   { key: 'ACTIVE', label: 'Activas' },
@@ -256,6 +276,23 @@ function getTodayDateInput() {
   const now = new Date()
   const tzOffsetMs = now.getTimezoneOffset() * 60 * 1000
   return new Date(now.getTime() - tzOffsetMs).toISOString().slice(0, 10)
+}
+
+function getMexicoTodayDateInput() {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Mexico_City',
+  }).format(new Date())
+}
+
+function getMexicoTomorrowDateInput() {
+  const [year, month, day] = getMexicoTodayDateInput().split('-').map(Number)
+  if (!year || !month || !day) return getTodayDateInput()
+  const tomorrow = new Date(Date.UTC(year, month - 1, day))
+  tomorrow.setUTCDate(tomorrow.getUTCDate() + 1)
+  const nextYear = tomorrow.getUTCFullYear()
+  const nextMonth = String(tomorrow.getUTCMonth() + 1).padStart(2, '0')
+  const nextDay = String(tomorrow.getUTCDate()).padStart(2, '0')
+  return `${nextYear}-${nextMonth}-${nextDay}`
 }
 
 function getStartOfWeek(date: Date) {
@@ -397,6 +434,19 @@ function formatDateFromIsoString(dateValue: string) {
   return `${day}/${month}/${year}`
 }
 
+function formatDayMonthFromIsoString(dateValue: string) {
+  const dateOnly = dateValue.slice(0, 10)
+  const [year, month, day] = dateOnly.split('-')
+  if (!year || !month || !day) return dateValue
+  return `${day}/${month}`
+}
+
+function isRequisitionOverdue(expectedDate: string | null, status: RequisitionStatus) {
+  if (!expectedDate) return false
+  if (status === 'RECEIVED' || status === 'CANCELLED') return false
+  return expectedDate.slice(0, 10) < getMexicoTodayDateInput()
+}
+
 function formatEnvelopeMovementType(type: string) {
   const normalized = type.trim().toUpperCase()
   if (normalized === 'DEPOSIT') return 'Abono'
@@ -460,6 +510,141 @@ function getTotals(draft: ClosingDraft) {
   const expectedCash = draft.openingCash + efectivoVentas - draft.cashWithdrawn
   const difference = draft.countedCash - expectedCash
   return { expectedCash, difference }
+}
+
+function canvasToBlob(canvas: HTMLCanvasElement) {
+  return new Promise<Blob | null>((resolve) => {
+    canvas.toBlob((blob) => resolve(blob), 'image/png')
+  })
+}
+
+function drawRequisitionTicket(summary: RequisitionTicketSummary) {
+  const rootStyles = getComputedStyle(document.documentElement)
+  const tinta = rootStyles.getPropertyValue('--tinta').trim() || '#1a2f38'
+  const cuadro = rootStyles.getPropertyValue('--cuadro').trim() || '#f0d96a'
+  const papel = rootStyles.getPropertyValue('--papel').trim() || '#f5f2ea'
+  const blanco = rootStyles.getPropertyValue('--blanco').trim() || '#ffffff'
+
+  const width = 800
+  const paddingX = 42
+  const lineHeight = 30
+  const rows =
+    4 +
+    summary.groups.reduce((sum, group) => {
+      return sum + 2 + group.lines.length + 1
+    }, 0) +
+    3
+  const height = Math.max(420, 60 + rows * lineHeight)
+
+  const canvas = document.createElement('canvas')
+  canvas.width = width
+  canvas.height = height
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return null
+
+  ctx.fillStyle = tinta
+  ctx.fillRect(0, 0, width, height)
+
+  const drawSawtooth = (top: boolean) => {
+    const step = 26
+    const depth = 12
+    ctx.fillStyle = papel
+    for (let x = 0; x < width; x += step) {
+      ctx.beginPath()
+      if (top) {
+        ctx.moveTo(x, 0)
+        ctx.lineTo(x + step / 2, depth)
+        ctx.lineTo(x + step, 0)
+      } else {
+        ctx.moveTo(x, height)
+        ctx.lineTo(x + step / 2, height - depth)
+        ctx.lineTo(x + step, height)
+      }
+      ctx.closePath()
+      ctx.fill()
+    }
+  }
+  drawSawtooth(true)
+  drawSawtooth(false)
+
+  const mono = '600 20px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace'
+  const monoSmall = '500 17px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace'
+  const monoTiny = '500 15px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace'
+  let y = 44
+
+  ctx.fillStyle = cuadro
+  ctx.font = mono
+  ctx.textAlign = 'left'
+  ctx.fillText(`PEDIDO · ${summary.businessName.toUpperCase()}`, paddingX, y)
+  y += lineHeight
+
+  ctx.fillStyle = blanco
+  ctx.font = monoSmall
+  ctx.fillText(summary.dateLabel, paddingX, y)
+  y += lineHeight + 6
+
+  const dottedSeparator = () => {
+    ctx.strokeStyle = cuadro
+    ctx.setLineDash([4, 6])
+    ctx.beginPath()
+    ctx.moveTo(paddingX, y)
+    ctx.lineTo(width - paddingX, y)
+    ctx.stroke()
+    ctx.setLineDash([])
+    y += 14
+  }
+
+  const fitLeftText = (text: string, maxWidth: number) => {
+    if (ctx.measureText(text).width <= maxWidth) return text
+    let result = text
+    while (result.length > 1 && ctx.measureText(`${result}…`).width > maxWidth) {
+      result = result.slice(0, -1)
+    }
+    return `${result}…`
+  }
+
+  summary.groups.forEach((group) => {
+    ctx.fillStyle = cuadro
+    ctx.font = monoSmall
+    ctx.textAlign = 'left'
+    ctx.fillText(group.providerName.toUpperCase(), paddingX, y)
+    y += lineHeight - 4
+    dottedSeparator()
+
+    group.lines.forEach((line) => {
+      ctx.fillStyle = blanco
+      ctx.font = monoTiny
+      ctx.textAlign = 'left'
+      const leftText = `${line.qty} ${line.unit} ${line.name}`
+      const rightText = formatMoney(line.subtotal)
+      const rightX = width - paddingX
+      const leftMaxWidth = rightX - paddingX - ctx.measureText(rightText).width - 24
+      ctx.fillText(fitLeftText(leftText, leftMaxWidth), paddingX, y)
+      ctx.textAlign = 'right'
+      ctx.fillText(rightText, rightX, y)
+      y += lineHeight - 4
+    })
+
+    ctx.fillStyle = cuadro
+    ctx.font = monoTiny
+    ctx.textAlign = 'right'
+    ctx.fillText(`SUBTOTAL ${formatMoney(group.subtotal)}`, width - paddingX, y)
+    y += lineHeight
+  })
+
+  dottedSeparator()
+  ctx.fillStyle = blanco
+  ctx.font = monoSmall
+  ctx.textAlign = 'right'
+  ctx.fillText(`TOTAL ${formatMoney(summary.total)}`, width - paddingX, y)
+  y += lineHeight + 8
+
+  ctx.fillStyle = cuadro
+  ctx.font = monoTiny
+  ctx.textAlign = 'left'
+  ctx.fillText('quadre.mx ✓', paddingX, y)
+
+  return canvas
 }
 
 export function AppShellPage() {
@@ -590,6 +775,9 @@ export function AppShellPage() {
     type: 'SUPPLIER',
     phone: '',
   })
+  const [lastCreatedRequisitionItems, setLastCreatedRequisitionItems] = useState<RequisitionItem[]>([])
+  const [summaryPreview, setSummaryPreview] = useState<{ url: string; file: File; filename: string } | null>(null)
+  const [creatingSummaryImage, setCreatingSummaryImage] = useState(false)
   const [savingRequisition, setSavingRequisition] = useState(false)
   const [requisitionFormError, setRequisitionFormError] = useState('')
   const [requisitionsSuccess, setRequisitionsSuccess] = useState('')
@@ -623,10 +811,12 @@ export function AppShellPage() {
   const [newRequisitionDraft, setNewRequisitionDraft] = useState<NewRequisitionDraft>({
     counterpartyId: '',
     notes: '',
+    expectedDate: getMexicoTomorrowDateInput(),
     lines: [],
   })
   const [receiveDraft, setReceiveDraft] = useState<ReceiveDraft>({
     counterpartyId: '',
+    receivedDate: getMexicoTodayDateInput(),
     lines: [],
   })
   const [memberForm, setMemberForm] = useState({
@@ -1099,6 +1289,12 @@ export function AppShellPage() {
     if (!useCashBreakdownMode) return
     setCloseDraft((prev) => ({ ...prev, countedCash: closeCashBreakdownTotal }))
   }, [closeCashBreakdownTotal, useCashBreakdownMode])
+
+  useEffect(() => {
+    return () => {
+      if (summaryPreview?.url) URL.revokeObjectURL(summaryPreview.url)
+    }
+  }, [summaryPreview])
 
   async function refreshShiftClosings() {
     if (!selectedLocationId || !token) return
@@ -1612,6 +1808,7 @@ export function AppShellPage() {
     setNewRequisitionDraft({
       counterpartyId: '',
       notes: '',
+      expectedDate: getMexicoTomorrowDateInput(),
       lines: [],
     })
     setRequisitionSearch('')
@@ -1665,11 +1862,148 @@ export function AppShellPage() {
     setRequisitionSearchQty(1)
   }
 
+  function buildTicketSummaryFromRequisitions({
+    sourceRequisitions,
+    dateKey,
+  }: {
+    sourceRequisitions: RequisitionItem[]
+    dateKey: string
+  }): RequisitionTicketSummary | null {
+    const groupsByProvider = new Map<string, RequisitionTicketGroup>()
+    sourceRequisitions.forEach((requisition) => {
+      const providerName = requisition.counterparty?.name || 'Sin proveedor'
+      if (!groupsByProvider.has(providerName)) {
+        groupsByProvider.set(providerName, { providerName, lines: [], subtotal: 0 })
+      }
+      const group = groupsByProvider.get(providerName)!
+      requisition.lines.forEach((line) => {
+        const fallbackItem = activeBusinessItems.find((item) => item.id === line.itemId)
+        const itemName = line.item?.name || fallbackItem?.name || 'Insumo'
+        const itemUnit = line.item?.unit || fallbackItem?.unit || 'PZA'
+        const qty = asDecimal(line.qty)
+        const subtotal = Number((qty * asDecimal(line.unitPrice)).toFixed(2))
+        group.lines.push({ qty, unit: itemUnit, name: itemName, subtotal })
+        group.subtotal = Number((group.subtotal + subtotal).toFixed(2))
+      })
+    })
+    const groups = Array.from(groupsByProvider.values()).sort((a, b) =>
+      a.providerName.localeCompare(b.providerName, 'es'),
+    )
+    if (!groups.length) return null
+    const total = Number(groups.reduce((sum, group) => sum + group.subtotal, 0).toFixed(2))
+    const [year, month, day] = dateKey.split('-')
+    return {
+      businessName: selectedBusiness?.name || 'Negocio',
+      dateLabel: `${day || '00'}/${month || '00'}/${year || '0000'}`,
+      dateKey,
+      groups,
+      total,
+    }
+  }
+
+  async function openRequisitionSummaryPreview(summary: RequisitionTicketSummary) {
+    const canvas = drawRequisitionTicket(summary)
+    if (!canvas) {
+      setRequisitionsError('No se pudo generar la imagen del resumen')
+      return
+    }
+    const blob = await canvasToBlob(canvas)
+    if (!blob) {
+      setRequisitionsError('No se pudo exportar la imagen del resumen')
+      return
+    }
+    const filename = `pedido-${summary.dateKey}.png`
+    const file = new File([blob], filename, { type: 'image/png' })
+    const url = URL.createObjectURL(blob)
+    if (summaryPreview?.url) URL.revokeObjectURL(summaryPreview.url)
+    setSummaryPreview({ url, file, filename })
+  }
+
+  function downloadSummaryImage() {
+    if (!summaryPreview) return
+    const link = document.createElement('a')
+    link.href = summaryPreview.url
+    link.download = summaryPreview.filename
+    link.click()
+  }
+
+  async function shareSummaryImage() {
+    if (!summaryPreview) return
+    const canShare = typeof navigator.share === 'function'
+    const canShareFiles =
+      canShare &&
+      ((navigator as Navigator & { canShare?: (payload: ShareData) => boolean }).canShare?.({
+        files: [summaryPreview.file],
+      }) ??
+        false)
+    if (canShareFiles) {
+      await navigator.share({
+        files: [summaryPreview.file],
+        title: summaryPreview.filename,
+      })
+      return
+    }
+    downloadSummaryImage()
+  }
+
+  async function handleOpenCreatedRequisitionsSummary() {
+    if (!lastCreatedRequisitionItems.length) {
+      setRequisitionsError('No hay requisiciones recién creadas para resumir')
+      return
+    }
+    setCreatingSummaryImage(true)
+    try {
+      const summary = buildTicketSummaryFromRequisitions({
+        sourceRequisitions: lastCreatedRequisitionItems,
+        dateKey: getTodayDateInput(),
+      })
+      if (!summary) {
+        setRequisitionsError('No se encontró información para generar el resumen')
+        return
+      }
+      await openRequisitionSummaryPreview(summary)
+    } finally {
+      setCreatingSummaryImage(false)
+    }
+  }
+
+  async function handleOpenTodayRequisitionsSummary() {
+    if (!token || !selectedLocationId) return
+    setCreatingSummaryImage(true)
+    setRequisitionsError('')
+    try {
+      const response = await getLocationRequisitions({
+        token,
+        locationId: selectedLocationId,
+      })
+      const todayKey = getTodayDateInput()
+      const todayRequisitions = (response.items || []).filter(
+        (item) => item.status !== 'CANCELLED' && item.createdAt?.slice(0, 10) === todayKey,
+      )
+      if (!todayRequisitions.length) {
+        setRequisitionsError('No hay requisiciones del día para compartir')
+        return
+      }
+      const summary = buildTicketSummaryFromRequisitions({
+        sourceRequisitions: todayRequisitions,
+        dateKey: todayKey,
+      })
+      if (!summary) {
+        setRequisitionsError('No se pudo construir el resumen del día')
+        return
+      }
+      await openRequisitionSummaryPreview(summary)
+    } finally {
+      setCreatingSummaryImage(false)
+    }
+  }
+
   function openReceiveModal(requisition: RequisitionItem) {
     setReceiveTarget(requisition)
     setReceiveError('')
     setReceiveDraft({
       counterpartyId: requisition.counterpartyId || '',
+      receivedDate: getMexicoTodayDateInput(),
       lines: requisition.lines.map((line) => ({
         lineId: line.id,
         itemName: line.item.name,
@@ -1686,7 +2020,7 @@ export function AppShellPage() {
     setShowReceiveModal(false)
     setReceiveTarget(null)
     setReceiveError('')
-    setReceiveDraft({ counterpartyId: '', lines: [] })
+    setReceiveDraft({ counterpartyId: '', receivedDate: getMexicoTodayDateInput(), lines: [] })
   }
 
   function handleSelectNavItem(item: string) {
@@ -2173,6 +2507,7 @@ export function AppShellPage() {
         locationId: selectedLocationId,
         payload: {
           notes: newRequisitionDraft.notes.trim() || undefined,
+          expectedDate: newRequisitionDraft.expectedDate || undefined,
           lines: newRequisitionDraft.lines.map((line) => ({
             itemId: line.itemId,
             qty: line.qty,
@@ -2184,6 +2519,7 @@ export function AppShellPage() {
       setShowRequisitionForm(false)
       resetNewRequisitionDraft()
       const createdCount = response.requisitions?.length || 0
+      setLastCreatedRequisitionItems(response.requisitions || [])
       setRequisitionsSuccess(
         createdCount > 1
           ? `${createdCount} requisiciones creadas y separadas por proveedor ✓`
@@ -2343,6 +2679,7 @@ export function AppShellPage() {
         requisitionId: receiveTarget.id,
         payload: {
           counterpartyId: receiveTarget.counterpartyId ? undefined : receiveDraft.counterpartyId,
+          receivedDate: receiveDraft.receivedDate || undefined,
           lines: receiveDraft.lines.map((line) => ({
             lineId: line.lineId,
             receivedQty: line.receivedQty,
@@ -2755,7 +3092,21 @@ export function AppShellPage() {
         </button>
       </div>
 
-      {requisitionsSuccess ? <p className="q-success-text">{requisitionsSuccess}</p> : null}
+      {requisitionsSuccess ? (
+        <div className="q-requisition-success-actions">
+          <p className="q-success-text">{requisitionsSuccess}</p>
+          {lastCreatedRequisitionItems.length ? (
+            <button
+              type="button"
+              className="q-link-btn"
+              disabled={creatingSummaryImage}
+              onClick={handleOpenCreatedRequisitionsSummary}
+            >
+              {creatingSummaryImage ? 'Generando imagen...' : 'Compartir/descargar resumen'}
+            </button>
+          ) : null}
+        </div>
+      ) : null}
       {loadingRequisitions ? <p>Cargando requisiciones...</p> : null}
       {requisitionsError ? <p className="q-error-text">{requisitionsError}</p> : null}
 
@@ -2787,6 +3138,14 @@ export function AppShellPage() {
               </button>
             ))}
           </div>
+          <button
+            type="button"
+            className="q-link-btn"
+            disabled={creatingSummaryImage}
+            onClick={handleOpenTodayRequisitionsSummary}
+          >
+            {creatingSummaryImage ? 'Generando imagen...' : 'Compartir resumen del día'}
+          </button>
 
           {showRequisitionForm ? (
             <section className="q-close-form-wrap">
@@ -2955,6 +3314,17 @@ export function AppShellPage() {
                     ) : null}
                   </div>
                   <label className="q-field">
+                    Fecha de entrega esperada
+                    <input
+                      type="date"
+                      value={newRequisitionDraft.expectedDate}
+                      onChange={(event) =>
+                        setNewRequisitionDraft((prev) => ({ ...prev, expectedDate: event.target.value }))
+                      }
+                      required
+                    />
+                  </label>
+                  <label className="q-field">
                     Notas
                     <input
                       type="text"
@@ -3009,6 +3379,7 @@ export function AppShellPage() {
                     <th>Folio</th>
                     <th>Proveedor</th>
                     <th>Solicitó</th>
+                    <th>Entrega</th>
                     <th className="is-right">Costeo estimado</th>
                     <th className="is-right">Recibido</th>
                     <th>Estado</th>
@@ -3026,6 +3397,17 @@ export function AppShellPage() {
                           <td className="q-mono">#{requisition.folio}</td>
                           <td>{requisition.counterparty?.name || 'Sin asignar'}</td>
                           <td>{requisition.requestedBy?.name || '—'}</td>
+                          <td>
+                            {requisition.expectedDate ? (
+                              <span
+                                className={`q-requisition-expected ${isRequisitionOverdue(requisition.expectedDate, requisition.status) ? 'is-overdue' : ''}`}
+                              >
+                                Entrega: {formatDayMonthFromIsoString(requisition.expectedDate)}
+                              </span>
+                            ) : (
+                              <span className="q-table-muted">Entrega: —</span>
+                            )}
+                          </td>
                           <td className="is-right q-mono">{formatMoney(asDecimal(requisition.estimatedTotal))}</td>
                           <td className="is-right q-mono">
                             {requisition.receivedTotal ? formatMoney(asDecimal(requisition.receivedTotal)) : '—'}
@@ -3050,11 +3432,17 @@ export function AppShellPage() {
                         </tr>
                         {isExpanded ? (
                           <tr className="q-requisition-detail-row">
-                            <td colSpan={7}>
+                            <td colSpan={8}>
                               <div className="q-requisition-detail">
                                 <p className="q-table-muted">
                                   Solicitó: {requisition.requestedBy?.name || '—'} · Fecha:{' '}
                                   {formatDateFromIsoString(requisition.createdAt)}
+                                </p>
+                                <p className={`q-table-muted q-requisition-expected-detail ${isRequisitionOverdue(requisition.expectedDate, requisition.status) ? 'is-overdue' : ''}`}>
+                                  Entrega:{' '}
+                                  {requisition.expectedDate
+                                    ? formatDayMonthFromIsoString(requisition.expectedDate)
+                                    : '—'}
                                 </p>
                                 {requisition.notes ? (
                                   <p className="q-table-muted">Notas: {requisition.notes}</p>
@@ -3575,6 +3963,21 @@ export function AppShellPage() {
               ) : (
                 <p className="q-table-muted">Proveedor: {receiveTarget.counterparty?.name || 'Asignado'}</p>
               )}
+              <label className="q-field">
+                Fecha de recepción
+                <input
+                  type="date"
+                  value={receiveDraft.receivedDate}
+                  onChange={(event) =>
+                    setReceiveDraft((prev) => ({
+                      ...prev,
+                      receivedDate: event.target.value,
+                    }))
+                  }
+                  required
+                />
+              </label>
+              <p className="q-field-hint">El gasto se registrará en esta fecha.</p>
 
               <div className="q-lines-wrap">
                 {receiveDraft.lines.map((line, index) => (
@@ -5080,6 +5483,28 @@ export function AppShellPage() {
           ) : null}
         </section>
       </main>
+
+      {summaryPreview ? (
+        <div className="q-modal-overlay" onClick={() => setSummaryPreview(null)}>
+          <section className="q-modal-card q-requisition-summary-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="q-close-form-header">
+              <h2>Resumen de pedido</h2>
+              <button type="button" className="q-link-btn" onClick={() => setSummaryPreview(null)}>
+                Cerrar
+              </button>
+            </div>
+            <img src={summaryPreview.url} alt="Resumen de requisiciones" className="q-requisition-summary-image" />
+            <div className="q-table-actions">
+              <button type="button" className="q-btn q-btn-inline" onClick={downloadSummaryImage}>
+                Descargar
+              </button>
+              <button type="button" className="q-btn q-btn-inline" onClick={() => void shareSummaryImage()}>
+                Compartir
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
     </>
   )
 }
