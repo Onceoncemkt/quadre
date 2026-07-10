@@ -528,6 +528,7 @@ export async function createPurchasePayment({
     amount: number
     method: 'EFECTIVO' | 'TARJETA' | 'TRANSFERENCIA' | 'APP' | 'OTRO'
     moneyAccountId?: string
+    envelopeId?: string
     evidenceUrl?: string
     notes?: string
     locationId?: string

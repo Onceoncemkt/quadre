@@ -23,6 +23,7 @@ const createPurchasePaymentSchema = z.object({
   amount: z.coerce.number().positive(),
   method: z.enum(['EFECTIVO', 'TARJETA', 'TRANSFERENCIA', 'APP', 'OTRO']),
   moneyAccountId: z.string().trim().min(1).optional(),
+  envelopeId: z.string().trim().min(1).optional(),
   evidenceUrl: z.string().url().optional(),
   notes: z.string().optional(),
   locationId: z.string().trim().min(1).optional(),
@@ -41,6 +42,15 @@ function getMexicoTodayString() {
 
 function toMoney(value) {
   return Number(Number(value || 0).toFixed(2));
+}
+
+function getEnvelopeSavedAmount(envelope) {
+  return Number(
+    (envelope.deposits || [])
+      .filter((deposit) => !envelope.lastPaidAt || deposit.date.getTime() > envelope.lastPaidAt.getTime())
+      .reduce((sum, deposit) => sum + Number(deposit.amount || 0), 0)
+      .toFixed(2),
+  );
 }
 
 async function getPurchaseWithMembership({ userId, purchaseId }) {
@@ -309,6 +319,33 @@ payablesRouter.post('/purchases/:id/payments', authMiddleware, async (req, res, 
       moneyAccountId = moneyAccount.id;
     }
 
+    let envelopeForWithdrawal = null;
+    if (parsed.data.envelopeId) {
+      if (parsed.data.method !== 'EFECTIVO') {
+        res.status(400).json({
+          ok: false,
+          error: 'envelopeId solo se permite cuando el método es EFECTIVO',
+        });
+        return;
+      }
+      const envelope = await prisma.envelope.findUnique({
+        where: { id: parsed.data.envelopeId },
+        include: {
+          deposits: { orderBy: { date: 'asc' } },
+        },
+      });
+      if (!envelope || envelope.businessId !== purchase.counterparty.businessId || !envelope.active) {
+        res.status(400).json({ ok: false, error: 'Sobre inválido para este negocio' });
+        return;
+      }
+      const availableEnvelope = getEnvelopeSavedAmount(envelope);
+      if (amount > availableEnvelope) {
+        res.status(400).json({ ok: false, error: 'Saldo insuficiente en el sobre seleccionado' });
+        return;
+      }
+      envelopeForWithdrawal = envelope;
+    }
+
     let locationIdForExpense = null;
     let categoryIdForExpense = null;
     if (purchase.kind === 'LOAN') {
@@ -406,7 +443,21 @@ payablesRouter.post('/purchases/:id/payments', authMiddleware, async (req, res, 
         });
       }
 
-      return { payment, purchase: updatedPurchase, expense };
+      let envelopeMovement = null;
+      if (envelopeForWithdrawal) {
+        const referenceLabel = (purchase.reference || '').trim() || purchase.id.slice(-6);
+        const withdrawalNote = `Pago a ${purchase.counterparty.name} · adeudo #${referenceLabel}`;
+        envelopeMovement = await tx.envelopeDeposit.create({
+          data: {
+            envelopeId: envelopeForWithdrawal.id,
+            date: paymentDate,
+            amount: Number((amount * -1).toFixed(2)),
+            note: `WITHDRAW:${withdrawalNote}`,
+          },
+        });
+      }
+
+      return { payment, purchase: updatedPurchase, expense, envelopeMovement };
     });
 
     res.status(201).json({ ok: true, ...result });

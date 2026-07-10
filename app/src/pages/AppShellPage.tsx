@@ -221,8 +221,10 @@ type PayableCreateDraft = {
 type PayablePaymentDraft = {
   date: string
   amount: number
-  method: 'EFECTIVO' | 'TARJETA' | 'TRANSFERENCIA' | 'APP' | 'OTRO'
+  paymentSource: 'CASH' | 'BANK' | 'ENVELOPE'
+  bankMethod: 'TARJETA' | 'TRANSFERENCIA'
   moneyAccountId: string
+  envelopeId: string
   notes: string
   locationId: string
   categoryId: string
@@ -735,6 +737,7 @@ export function AppShellPage() {
   const [loadingEnvelopes, setLoadingEnvelopes] = useState(false)
   const [envelopesError, setEnvelopesError] = useState('')
   const [envelopesSuccess, setEnvelopesSuccess] = useState('')
+  const [payablesEnvelopeOptions, setPayablesEnvelopeOptions] = useState<EnvelopeItem[]>([])
   const [savingEnvelope, setSavingEnvelope] = useState(false)
   const [showEnvelopeForm, setShowEnvelopeForm] = useState(false)
   const [activeDepositEnvelopeId, setActiveDepositEnvelopeId] = useState('')
@@ -1032,8 +1035,9 @@ export function AppShellPage() {
       getBusinessCounterparties({ token, businessId: selectedBusinessId }),
       getExpenseCategories({ token, businessId: selectedBusinessId }),
       getBusinessMoneyAccounts({ token, businessId: selectedBusinessId, month: getCurrentMonthInput() }),
+      getBusinessEnvelopes({ token, businessId: selectedBusinessId }),
     ])
-      .then(([payablesResponse, counterpartiesResponse, categoriesResponse, moneyAccountsResponse]) => {
+      .then(([payablesResponse, counterpartiesResponse, categoriesResponse, moneyAccountsResponse, envelopesResponse]) => {
         setPayablesSummary(payablesResponse)
         const nextCounterparties = counterpartiesResponse.counterparties || []
         setCounterparties(nextCounterparties)
@@ -1041,6 +1045,7 @@ export function AppShellPage() {
         setExpenseCategories(nextCategories)
         setMoneyAccounts(moneyAccountsResponse.items || [])
         setDefaultMoneyAccountId(moneyAccountsResponse.defaultMoneyAccountId || '')
+        setPayablesEnvelopeOptions(envelopesResponse.items || [])
         setPayableCreateDraft((prev) => ({
           ...prev,
           counterpartyId: prev.counterpartyId || nextCounterparties.find((item) => item.active)?.id || '',
@@ -1286,6 +1291,11 @@ export function AppShellPage() {
     () => counterparties.filter((counterparty) => counterparty.active),
     [counterparties],
   )
+  const activePayablesEnvelopes = useMemo(
+    () =>
+      payablesEnvelopeOptions.filter((envelope) => envelope.active && asDecimal(envelope.saved) > 0),
+    [payablesEnvelopeOptions],
+  )
   const activeMoneyAccounts = useMemo(() => moneyAccounts.filter((account) => account.active), [moneyAccounts])
   const pnlOperativeBreakdown = useMemo(
     () => (pnlSummary?.desgloseCategorias || []).filter((item) => item.kind === 'OPERATIVO'),
@@ -1443,8 +1453,10 @@ export function AppShellPage() {
       payablePaymentDraftByPurchase[purchase.id] || {
         date: getTodayDateInput(),
         amount: saldo,
-        method: 'TRANSFERENCIA',
+        paymentSource: 'BANK',
+        bankMethod: 'TRANSFERENCIA',
         moneyAccountId: defaultMoneyAccountId || '',
+        envelopeId: '',
         notes: '',
         locationId: selectedLocationId,
         categoryId: expenseCategories.find((category) => category.name === 'Otros gastos')?.id || expenseCategories[0]?.id || '',
@@ -1558,8 +1570,12 @@ export function AppShellPage() {
       setPayablesError('Captura un monto válido para abonar')
       return
     }
-    if ((draft.method === 'TARJETA' || draft.method === 'TRANSFERENCIA') && !draft.moneyAccountId) {
+    if (draft.paymentSource === 'BANK' && !draft.moneyAccountId) {
       setPayablesError('Selecciona la cuenta de dinero para este abono')
+      return
+    }
+    if (draft.paymentSource === 'ENVELOPE' && !draft.envelopeId) {
+      setPayablesError('Selecciona el sobre desde donde saldrá este abono')
       return
     }
     if (purchase.kind === 'LOAN' && !draft.categoryId) {
@@ -1577,11 +1593,9 @@ export function AppShellPage() {
         payload: {
           date: draft.date,
           amount: draft.amount,
-          method: draft.method,
-          moneyAccountId:
-            draft.method === 'TARJETA' || draft.method === 'TRANSFERENCIA'
-              ? draft.moneyAccountId || undefined
-              : undefined,
+          method: draft.paymentSource === 'BANK' ? draft.bankMethod : 'EFECTIVO',
+          moneyAccountId: draft.paymentSource === 'BANK' ? draft.moneyAccountId || undefined : undefined,
+          envelopeId: draft.paymentSource === 'ENVELOPE' ? draft.envelopeId || undefined : undefined,
           notes: draft.notes.trim() || undefined,
           locationId: draft.locationId || undefined,
           categoryId: purchase.kind === 'LOAN' ? draft.categoryId || undefined : undefined,
@@ -1589,6 +1603,10 @@ export function AppShellPage() {
       })
       await refreshPayablesData()
       await loadPurchasePayments(purchase.id)
+      if (selectedBusinessId) {
+        const envelopesResponse = await getBusinessEnvelopes({ token, businessId: selectedBusinessId })
+        setPayablesEnvelopeOptions(envelopesResponse.items || [])
+      }
       setPayablesSuccess(
         purchase.kind === 'LOAN'
           ? 'Abono registrado y gasto creado ✓'
@@ -4675,6 +4693,10 @@ export function AppShellPage() {
                   <div className="q-payable-purchases">
                     {row.purchases.map((purchase) => {
                       const saldo = Math.max(asDecimal(purchase.total) - asDecimal(purchase.paidAmount), 0)
+                      const canPayThisPurchase =
+                        canManagePayables &&
+                        (purchase.status === 'PENDING' || purchase.status === 'PARTIAL') &&
+                        saldo > 0
                       const isOverdue = Boolean(purchase.dueDate && purchase.dueDate.slice(0, 10) < getTodayDateInput())
                       const draft = getPayablePaymentDraft(purchase)
                       const payments = purchasePaymentsByPurchase[purchase.id] || []
@@ -4706,18 +4728,20 @@ export function AppShellPage() {
                             <span>Saldo: <strong className="q-mono">{formatMoney(saldo)}</strong></span>
                           </div>
                           <div className="q-table-actions">
-                            <button
-                              type="button"
-                              className="q-link-btn"
-                              onClick={() => {
-                                setActivePayPurchaseId((prev) => (prev === purchase.id ? '' : purchase.id))
-                                if (!purchasePaymentsByPurchase[purchase.id]) {
-                                  loadPurchasePayments(purchase.id).catch(() => {})
-                                }
-                              }}
-                            >
-                              Abonar
-                            </button>
+                            {canPayThisPurchase ? (
+                              <button
+                                type="button"
+                                className="q-link-btn"
+                                onClick={() => {
+                                  setActivePayPurchaseId((prev) => (prev === purchase.id ? '' : purchase.id))
+                                  if (!purchasePaymentsByPurchase[purchase.id]) {
+                                    loadPurchasePayments(purchase.id).catch(() => {})
+                                  }
+                                }}
+                              >
+                                Abonar
+                              </button>
+                            ) : null}
                             <button
                               type="button"
                               className="q-link-btn"
@@ -4752,41 +4776,78 @@ export function AppShellPage() {
                                 }
                               />
                               <select
-                                value={draft.method}
+                                value={draft.paymentSource}
                                 onChange={(event) =>
                                   setPayablePaymentDraftByPurchase((prev) => ({
                                     ...prev,
                                     [purchase.id]: {
                                       ...draft,
-                                      method: event.target.value as PayablePaymentDraft['method'],
+                                      paymentSource: event.target.value as PayablePaymentDraft['paymentSource'],
                                       moneyAccountId:
-                                        event.target.value === 'TARJETA' || event.target.value === 'TRANSFERENCIA'
+                                        event.target.value === 'BANK'
                                           ? draft.moneyAccountId || defaultMoneyAccountId || ''
+                                          : '',
+                                      envelopeId:
+                                        event.target.value === 'ENVELOPE'
+                                          ? draft.envelopeId || activePayablesEnvelopes[0]?.id || ''
                                           : '',
                                     },
                                   }))
                                 }
                               >
-                                <option value="EFECTIVO">EFECTIVO</option>
-                                <option value="TARJETA">TARJETA</option>
-                                <option value="TRANSFERENCIA">TRANSFERENCIA</option>
-                                <option value="APP">APP</option>
-                                <option value="OTRO">OTRO</option>
+                                <option value="CASH">Efectivo</option>
+                                <option value="BANK">Cuenta bancaria</option>
+                                <option value="ENVELOPE">Sobre</option>
                               </select>
-                              {draft.method === 'TARJETA' || draft.method === 'TRANSFERENCIA' ? (
+                              {draft.paymentSource === 'BANK' ? (
+                                <>
+                                  <select
+                                    value={draft.bankMethod}
+                                    onChange={(event) =>
+                                      setPayablePaymentDraftByPurchase((prev) => ({
+                                        ...prev,
+                                        [purchase.id]: {
+                                          ...draft,
+                                          bankMethod: event.target.value as PayablePaymentDraft['bankMethod'],
+                                        },
+                                      }))
+                                    }
+                                  >
+                                    <option value="TRANSFERENCIA">TRANSFERENCIA</option>
+                                    <option value="TARJETA">TARJETA</option>
+                                  </select>
+                                  <select
+                                    value={draft.moneyAccountId}
+                                    onChange={(event) =>
+                                      setPayablePaymentDraftByPurchase((prev) => ({
+                                        ...prev,
+                                        [purchase.id]: { ...draft, moneyAccountId: event.target.value },
+                                      }))
+                                    }
+                                  >
+                                    <option value="">Selecciona cuenta</option>
+                                    {activeMoneyAccounts.map((account) => (
+                                      <option key={account.id} value={account.id}>
+                                        {account.name}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </>
+                              ) : null}
+                              {draft.paymentSource === 'ENVELOPE' ? (
                                 <select
-                                  value={draft.moneyAccountId}
+                                  value={draft.envelopeId}
                                   onChange={(event) =>
                                     setPayablePaymentDraftByPurchase((prev) => ({
                                       ...prev,
-                                      [purchase.id]: { ...draft, moneyAccountId: event.target.value },
+                                      [purchase.id]: { ...draft, envelopeId: event.target.value },
                                     }))
                                   }
                                 >
-                                  <option value="">Selecciona cuenta</option>
-                                  {activeMoneyAccounts.map((account) => (
-                                    <option key={account.id} value={account.id}>
-                                      {account.name}
+                                  <option value="">Selecciona sobre</option>
+                                  {activePayablesEnvelopes.map((envelope) => (
+                                    <option key={envelope.id} value={envelope.id}>
+                                      {envelope.name} · Disponible {formatMoney(asDecimal(envelope.saved))}
                                     </option>
                                   ))}
                                 </select>
