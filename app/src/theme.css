@@ -216,6 +216,7 @@ body {
   justify-content: space-between;
   align-items: flex-start;
   gap: 14px;
+  flex-wrap: wrap;
 }
 
 .q-section-header h1 {
@@ -238,6 +239,7 @@ body {
 .q-filter-row {
   display: flex;
   gap: 8px;
+  flex-wrap: wrap;
 }
 
 .q-chip-btn {
@@ -440,6 +442,7 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
 }
 
 .q-month-nav strong {
@@ -536,6 +539,7 @@ body {
   align-items: flex-start;
   justify-content: space-between;
   gap: 10px;
+  flex-wrap: wrap;
 }
 
 .q-payable-top h3 {
@@ -564,6 +568,7 @@ body {
   display: flex;
   justify-content: space-between;
   gap: 10px;
+  flex-wrap: wrap;
 }
 
 .q-payable-purchase-head p {
@@ -610,6 +615,7 @@ body {
   justify-content: space-between;
   align-items: center;
   gap: 10px;
+  flex-wrap: wrap;
 }
 
 .q-envelope-strip-sub {
@@ -781,6 +787,7 @@ body {
   align-items: center;
   gap: 10px;
   margin-bottom: 10px;
+  flex-wrap: wrap;
 }
 
 .q-catalog-header h3 {
@@ -1232,6 +1239,10 @@ body {
     display: none;
   }
 
+  .q-main {
+    padding: 16px;
+  }
+
   .q-drawer-overlay {
     display: block;
     position: fixed;
@@ -1289,6 +1300,20 @@ body {
     flex-direction: column;
     align-items: stretch;
   }
+  .q-section-header > .q-btn-inline,
+  .q-section-header .q-actions-row > .q-btn-inline,
+  .q-requisition-primary-btn {
+    width: 100%;
+  }
+
+  .q-actions-row {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .q-month-nav strong {
+    min-width: 110px;
+  }
 
   .q-field-grid-2,
   .q-field-grid-3,
@@ -1298,6 +1323,24 @@ body {
 
   .q-inline-quick-item-grid {
     grid-template-columns: 1fr;
+  }
+  .q-requisition-cart-search-row,
+  .q-requisition-line,
+  .q-payable-purchase-stats,
+  .q-payable-payment-form,
+  .q-payable-history-row,
+  .q-cash-breakdown-row {
+    grid-template-columns: 1fr;
+  }
+
+  .q-requisition-search-item {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .q-requisition-search-item-actions {
+    width: 100%;
+    justify-content: space-between;
   }
 
   .q-close-form-grid {
