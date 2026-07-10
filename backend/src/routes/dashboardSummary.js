@@ -93,7 +93,7 @@ dashboardSummaryRouter.get('/locations/:locationId/dashboard-summary', authMiddl
     }
     const nextMonthStart = addMonths(monthStart, 1);
 
-    const [todayClosings, monthClosings] = await Promise.all([
+    const [todayClosings, monthClosings, monthClosingsCount, lastActiveShift] = await Promise.all([
       prisma.shiftClosing.findMany({
         where: {
           shift: {
@@ -124,6 +124,39 @@ dashboardSummaryRouter.get('/locations/:locationId/dashboard-summary', authMiddl
           lines: true,
         },
       }),
+      prisma.shift.count({
+        where: {
+          locationId,
+          voidedAt: null,
+          date: {
+            gte: monthStart,
+            lt: nextMonthStart,
+          },
+          closing: {
+            isNot: null,
+          },
+        },
+      }),
+      prisma.shift.findFirst({
+        where: {
+          locationId,
+          voidedAt: null,
+          closing: {
+            isNot: null,
+          },
+        },
+        orderBy: [{ date: 'desc' }, { createdAt: 'desc' }],
+        select: {
+          id: true,
+          date: true,
+          type: true,
+          closing: {
+            select: {
+              countedCash: true,
+            },
+          },
+        },
+      }),
     ]);
 
     const todaySummary = summarizeClosings(todayClosings);
@@ -138,8 +171,16 @@ dashboardSummaryRouter.get('/locations/:locationId/dashboard-summary', authMiddl
       mes: {
         ventasNetas: monthSummary.ventasNetas,
         faltantes: monthSummary.faltantes,
-        cierres: monthClosings.length,
+        cierres: monthClosingsCount,
       },
+      efectivoEnCaja: lastActiveShift
+        ? {
+            monto: Number(Number(lastActiveShift.closing?.countedCash || 0).toFixed(2)),
+            shiftId: lastActiveShift.id,
+            fecha: lastActiveShift.date,
+            tipo: lastActiveShift.type,
+          }
+        : null,
     });
   } catch (error) {
     next(error);

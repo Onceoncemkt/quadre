@@ -711,6 +711,7 @@ export function AppShellPage() {
   const [moneyAccountsError, setMoneyAccountsError] = useState('')
   const [moneyAccountsSuccess, setMoneyAccountsSuccess] = useState('')
   const [showMoneyAccountForm, setShowMoneyAccountForm] = useState(false)
+  const [editingMoneyAccountId, setEditingMoneyAccountId] = useState('')
   const [newMoneyAccountName, setNewMoneyAccountName] = useState('')
   const [newMoneyAccountKind, setNewMoneyAccountKind] = useState<'BANK' | 'CASH_VAULT' | 'OTHER'>('BANK')
   const [newMoneyAccountInitialBalance, setNewMoneyAccountInitialBalance] = useState(0)
@@ -1700,23 +1701,43 @@ export function AppShellPage() {
     setMoneyAccountsError('')
     setMoneyAccountsSuccess('')
     try {
-      await createBusinessMoneyAccount({
-        token,
-        businessId: selectedBusinessId,
-        payload: {
-          name: newMoneyAccountName.trim(),
-          kind: newMoneyAccountKind,
-          initialBalance: newMoneyAccountInitialBalance,
-        },
-      })
+      if (editingMoneyAccountId) {
+        await patchBusinessMoneyAccount({
+          token,
+          businessId: selectedBusinessId,
+          moneyAccountId: editingMoneyAccountId,
+          payload: {
+            name: newMoneyAccountName.trim(),
+            kind: newMoneyAccountKind,
+            initialBalance: newMoneyAccountInitialBalance,
+          },
+        })
+      } else {
+        await createBusinessMoneyAccount({
+          token,
+          businessId: selectedBusinessId,
+          payload: {
+            name: newMoneyAccountName.trim(),
+            kind: newMoneyAccountKind,
+            initialBalance: newMoneyAccountInitialBalance,
+          },
+        })
+      }
       await refreshMoneyAccountsData()
+      setEditingMoneyAccountId('')
       setNewMoneyAccountName('')
       setNewMoneyAccountKind('BANK')
       setNewMoneyAccountInitialBalance(0)
       setShowMoneyAccountForm(false)
-      setMoneyAccountsSuccess('Cuenta creada ✓')
+      setMoneyAccountsSuccess(editingMoneyAccountId ? 'Cuenta actualizada ✓' : 'Cuenta creada ✓')
     } catch (error) {
-      setMoneyAccountsError(error instanceof Error ? error.message : 'No se pudo crear la cuenta')
+      setMoneyAccountsError(
+        error instanceof Error
+          ? error.message
+          : editingMoneyAccountId
+            ? 'No se pudo actualizar la cuenta'
+            : 'No se pudo crear la cuenta',
+      )
     }
   }
 
@@ -4852,7 +4873,15 @@ export function AppShellPage() {
             <button
               className="q-btn q-btn-inline"
               type="button"
-              onClick={() => setShowMoneyAccountForm((prev) => !prev)}
+              onClick={() => {
+                if (!showMoneyAccountForm) {
+                  setEditingMoneyAccountId('')
+                  setNewMoneyAccountName('')
+                  setNewMoneyAccountKind('BANK')
+                  setNewMoneyAccountInitialBalance(0)
+                }
+                setShowMoneyAccountForm((prev) => !prev)
+              }}
             >
               {showMoneyAccountForm ? 'Cerrar formulario' : 'Nueva cuenta'}
             </button>
@@ -4899,8 +4928,23 @@ export function AppShellPage() {
             </label>
           </div>
           <button className="q-btn q-btn-inline" type="button" onClick={() => handleCreateMoneyAccount()}>
-            Guardar cuenta
+            {editingMoneyAccountId ? 'Guardar cambios' : 'Guardar cuenta'}
           </button>
+          {editingMoneyAccountId ? (
+            <button
+              className="q-link-btn"
+              type="button"
+              onClick={() => {
+                setEditingMoneyAccountId('')
+                setNewMoneyAccountName('')
+                setNewMoneyAccountKind('BANK')
+                setNewMoneyAccountInitialBalance(0)
+                setShowMoneyAccountForm(false)
+              }}
+            >
+              Cancelar edición
+            </button>
+          ) : null}
         </div>
       ) : null}
 
@@ -4941,6 +4985,21 @@ export function AppShellPage() {
                   >
                     {isExpanded ? 'Ocultar movimientos' : 'Ver movimientos'}
                   </button>
+                  {canCreateEnvelope ? (
+                    <button
+                      type="button"
+                      className="q-link-btn"
+                      onClick={() => {
+                        setEditingMoneyAccountId(account.id)
+                        setNewMoneyAccountName(account.name)
+                        setNewMoneyAccountKind(account.kind)
+                        setNewMoneyAccountInitialBalance(asDecimal(account.initialBalance))
+                        setShowMoneyAccountForm(true)
+                      }}
+                    >
+                      Editar
+                    </button>
+                  ) : null}
                   {canCreateEnvelope ? (
                     <button type="button" className="q-link-btn" onClick={() => handleSetDefaultMoneyAccount(account.id)}>
                       {account.isDefault ? 'Cuenta default actual' : 'Marcar como default'}
