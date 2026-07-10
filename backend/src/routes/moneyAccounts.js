@@ -203,6 +203,7 @@ moneyAccountsRouter.get(
             method: { in: ['TARJETA', 'TRANSFERENCIA'] },
             closing: {
               shift: {
+                voidedAt: null,
                 location: {
                   businessId,
                 },

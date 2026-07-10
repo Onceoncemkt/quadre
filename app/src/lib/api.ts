@@ -41,6 +41,34 @@ export async function register(input: {
   })
 }
 
+export async function voidShift({
+  token,
+  shiftId,
+  payload,
+}: {
+  token: string
+  shiftId: string
+  payload: {
+    reason: string
+  }
+}) {
+  return request<{
+    shift: {
+      id: string
+      locationId: string
+      date: string
+      type: 'MATUTINO' | 'VESPERTINO' | 'NOCTURNO' | 'UNICO'
+      voidedAt: string
+      voidReason: string
+      voidedBy: { id: string; name: string } | null
+    }
+  }>(`/shifts/${shiftId}/void`, {
+    method: 'POST',
+    token,
+    body: payload,
+  })
+}
+
 export async function getBusinessMoneyAccounts({
   token,
   businessId,
@@ -212,12 +240,17 @@ export type CounterpartyPaymentItem = {
   counterpartyId: string
   purchaseId: string | null
   moneyAccountId: string | null
+  createdById: string | null
   date: string
   amount: string
   method: 'EFECTIVO' | 'TARJETA' | 'TRANSFERENCIA' | 'APP' | 'OTRO'
   evidenceUrl: string | null
   notes: string | null
   createdAt: string
+  createdBy?: {
+    id: string
+    name: string
+  } | null
   moneyAccount?: {
     id: string
     name: string
@@ -232,10 +265,14 @@ export type PayablesSummary = {
       name: string
       type: 'SUPPLIER' | 'LENDER'
       phone: string | null
+      paymentTerms: string | null
+      notes: string | null
     }
     saldo: number
     purchases: Array<{
       id: string
+      createdById: string | null
+      createdBy?: { id: string; name: string } | null
       kind: 'GOODS' | 'SERVICE' | 'LOAN'
       reference: string | null
       date: string
@@ -1069,6 +1106,9 @@ export type ShiftClosingItem = {
     id: string
     date: string
     type: 'MATUTINO' | 'VESPERTINO' | 'NOCTURNO' | 'UNICO'
+    voidedAt: string | null
+    voidReason: string | null
+    voidedBy: { id: string; name: string } | null
   }
   closedBy: { id: string; name: string } | null
   lines: ShiftClosingLine[]

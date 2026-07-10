@@ -347,6 +347,7 @@ expensesRouter.get('/locations/:locationId/pnl', authMiddleware, async (req, res
           closing: {
             shift: {
               locationId,
+              voidedAt: null,
               date: {
                 gte: monthBounds.start,
                 lt: monthBounds.end,

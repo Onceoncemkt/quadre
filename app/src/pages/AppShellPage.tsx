@@ -41,6 +41,7 @@ import {
   transferEnvelope,
   getShiftClosings,
   getWaitlist,
+  voidShift,
   withdrawEnvelope,
   type BusinessMember,
   type BusinessItem,
@@ -231,6 +232,8 @@ type PayableCounterpartyDraft = {
   name: string
   type: 'SUPPLIER' | 'LENDER'
   phone: string
+  paymentTerms: string
+  notes: string
 }
 type RequisitionAssignDraft = {
   counterpartyId: string
@@ -439,6 +442,15 @@ function formatDateFromIsoString(dateValue: string) {
   const [year, month, day] = dateOnly.split('-')
   if (!year || !month || !day) return dateValue
   return `${day}/${month}/${year}`
+}
+
+function formatDateTimeFromIsoString(dateValue: string) {
+  const date = new Date(dateValue)
+  if (Number.isNaN(date.getTime())) return dateValue
+  return new Intl.DateTimeFormat('es-MX', {
+    dateStyle: 'short',
+    timeStyle: 'short',
+  }).format(date)
 }
 
 function formatDayMonthFromIsoString(dateValue: string) {
@@ -665,6 +677,11 @@ export function AppShellPage() {
   const [loadingClosings, setLoadingClosings] = useState(false)
   const [closingsError, setClosingsError] = useState('')
   const [closingsRange, setClosingsRange] = useState<'week' | 'month'>('week')
+  const [expandedClosingId, setExpandedClosingId] = useState('')
+  const [voidTargetClosing, setVoidTargetClosing] = useState<ShiftClosingItem | null>(null)
+  const [voidReason, setVoidReason] = useState('')
+  const [voidError, setVoidError] = useState('')
+  const [savingVoidClosing, setSavingVoidClosing] = useState(false)
   const [showCloseForm, setShowCloseForm] = useState(false)
   const [savingClose, setSavingClose] = useState(false)
   const [closeError, setCloseError] = useState('')
@@ -703,6 +720,7 @@ export function AppShellPage() {
   const [savingPayables, setSavingPayables] = useState(false)
   const [showPayableForm, setShowPayableForm] = useState(false)
   const [showInlinePayableCounterpartyForm, setShowInlinePayableCounterpartyForm] = useState(false)
+  const [payableCounterpartyEditId, setPayableCounterpartyEditId] = useState('')
   const [expandedCounterpartyId, setExpandedCounterpartyId] = useState('')
   const [activePayPurchaseId, setActivePayPurchaseId] = useState('')
   const [purchasePaymentsByPurchase, setPurchasePaymentsByPurchase] = useState<
@@ -771,6 +789,8 @@ export function AppShellPage() {
     name: '',
     type: 'SUPPLIER',
     phone: '',
+    paymentTerms: '',
+    notes: '',
   })
   const [requisitions, setRequisitions] = useState<RequisitionItem[]>([])
   const [loadingRequisitions, setLoadingRequisitions] = useState(false)
@@ -793,6 +813,8 @@ export function AppShellPage() {
     name: '',
     type: 'SUPPLIER',
     phone: '',
+    paymentTerms: '',
+    notes: '',
   })
   const [lastCreatedRequisitionItems, setLastCreatedRequisitionItems] = useState<RequisitionItem[]>([])
   const [summaryPreview, setSummaryPreview] = useState<{ url: string; file: File; filename: string } | null>(null)
@@ -888,6 +910,9 @@ export function AppShellPage() {
   const canRegisterExpense = canReceiveRequisition
   const canDeleteManualExpense =
     selectedBusinessMembership?.role === 'OWNER' || selectedBusinessMembership?.role === 'ADMIN'
+  const canVoidClosing =
+    selectedBusinessMembership?.role === 'OWNER' || selectedBusinessMembership?.role === 'ADMIN'
+  const canManagePayables = Boolean(selectedBusinessMembership)
   const canCreateEnvelope =
     selectedBusinessMembership?.role === 'OWNER' || selectedBusinessMembership?.role === 'ADMIN'
   const canDepositEnvelope = canReceiveRequisition
@@ -1357,6 +1382,47 @@ export function AppShellPage() {
     setClosings(response.items)
   }
 
+  function openVoidClosingModal(closing: ShiftClosingItem) {
+    setVoidTargetClosing(closing)
+    setVoidReason('')
+    setVoidError('')
+  }
+
+  function closeVoidClosingModal() {
+    setVoidTargetClosing(null)
+    setVoidReason('')
+    setVoidError('')
+    setSavingVoidClosing(false)
+  }
+
+  async function handleConfirmVoidClosing() {
+    if (!token || !voidTargetClosing) return
+    const reason = voidReason.trim()
+    if (!reason) {
+      setVoidError('El motivo es obligatorio')
+      return
+    }
+    setSavingVoidClosing(true)
+    setVoidError('')
+    try {
+      await voidShift({
+        token,
+        shiftId: voidTargetClosing.shift.id,
+        payload: { reason },
+      })
+      await refreshShiftClosings()
+      await Promise.all([
+        selectedLocationId ? refreshDashboardSummary() : Promise.resolve(),
+        selectedLocationId ? refreshPnlData() : Promise.resolve(),
+        selectedBusinessId ? refreshMoneyAccountsData() : Promise.resolve(),
+      ])
+      closeVoidClosingModal()
+    } catch (error) {
+      setVoidError(error instanceof Error ? error.message : 'No se pudo anular el cierre')
+      setSavingVoidClosing(false)
+    }
+  }
+
   function resetPayableCreateDraft() {
     setPayableCreateDraft({
       counterpartyId: activePayablesCounterparties[0]?.id || '',
@@ -1430,24 +1496,40 @@ export function AppShellPage() {
     setSavingPayables(true)
     setPayablesError('')
     try {
-      const response = await createBusinessCounterparty({
-        token,
-        businessId: selectedBusinessId,
-        payload: {
-          name: payableCounterpartyDraft.name.trim(),
-          type: payableCounterpartyDraft.type,
-          phone: payableCounterpartyDraft.phone.trim() || undefined,
-        },
-      })
+      const payload = {
+        name: payableCounterpartyDraft.name.trim(),
+        type: payableCounterpartyDraft.type,
+        phone: payableCounterpartyDraft.phone.trim() || undefined,
+        paymentTerms: payableCounterpartyDraft.paymentTerms.trim() || undefined,
+        notes: payableCounterpartyDraft.notes.trim() || undefined,
+      }
+      const response = payableCounterpartyEditId
+        ? await patchBusinessCounterparty({
+            token,
+            businessId: selectedBusinessId,
+            counterpartyId: payableCounterpartyEditId,
+            payload: {
+              name: payload.name,
+              phone: payload.phone || null,
+              paymentTerms: payload.paymentTerms || null,
+              notes: payload.notes || null,
+            },
+          })
+        : await createBusinessCounterparty({
+            token,
+            businessId: selectedBusinessId,
+            payload,
+          })
       const counterpartiesResponse = await getBusinessCounterparties({
         token,
         businessId: selectedBusinessId,
       })
       setCounterparties(counterpartiesResponse.counterparties || [])
       setPayableCreateDraft((prev) => ({ ...prev, counterpartyId: response.counterparty.id }))
-      setPayableCounterpartyDraft({ name: '', type: 'SUPPLIER', phone: '' })
+      setPayableCounterpartyDraft({ name: '', type: 'SUPPLIER', phone: '', paymentTerms: '', notes: '' })
+      setPayableCounterpartyEditId('')
       setShowInlinePayableCounterpartyForm(false)
-      setPayablesSuccess('Acreedor creado ✓')
+      setPayablesSuccess(payableCounterpartyEditId ? 'Acreedor actualizado ✓' : 'Acreedor creado ✓')
     } catch (error) {
       setPayablesError(error instanceof Error ? error.message : 'No se pudo crear el acreedor')
     } finally {
@@ -1576,6 +1658,25 @@ export function AppShellPage() {
     const response = await getBusinessPayables({ token, businessId: selectedBusinessId })
     setPayablesSummary(response)
     return response
+  }
+
+  async function refreshDashboardSummary() {
+    if (!token || !selectedLocationId) return
+    const response = await getDashboardSummary({
+      token,
+      locationId: selectedLocationId,
+    })
+    setDashboardSummary(response)
+  }
+
+  async function refreshPnlData() {
+    if (!token || !selectedLocationId) return
+    const response = await getLocationPnl({
+      token,
+      locationId: selectedLocationId,
+      month: pnlMonth,
+    })
+    setPnlSummary(response)
   }
 
   async function refreshMoneyAccountsData() {
@@ -2755,6 +2856,8 @@ export function AppShellPage() {
           name: requisitionCounterpartyDraft.name.trim(),
           type: requisitionCounterpartyDraft.type,
           phone: requisitionCounterpartyDraft.phone.trim() || undefined,
+          paymentTerms: requisitionCounterpartyDraft.paymentTerms.trim() || undefined,
+          notes: requisitionCounterpartyDraft.notes.trim() || undefined,
         },
       })
       const counterpartiesResponse = await getBusinessCounterparties({
@@ -2769,7 +2872,7 @@ export function AppShellPage() {
           showInlineCreate: false,
         },
       }))
-      setRequisitionCounterpartyDraft({ name: '', type: 'SUPPLIER', phone: '' })
+      setRequisitionCounterpartyDraft({ name: '', type: 'SUPPLIER', phone: '', paymentTerms: '', notes: '' })
       setRequisitionsSuccess('Proveedor creado ✓')
     } catch (error) {
       setRequisitionsError(error instanceof Error ? error.message : 'No se pudo crear el proveedor')
@@ -2907,7 +3010,6 @@ export function AppShellPage() {
                     }
                   />
                 </label>
-
                 <label className="q-field">
                   Tipo de turno
                   <select
@@ -3164,50 +3266,133 @@ export function AppShellPage() {
                 <th className="is-right">Ventas</th>
                 <th className="is-right">Arqueo</th>
                 <th>Estado</th>
+                <th>Detalle</th>
+                <th>Acciones</th>
               </tr>
             </thead>
             <tbody>
               {closings.map((item) => {
+                const isVoided = Boolean(item.shift.voidedAt)
+                const isExpanded = expandedClosingId === item.id
                 const grossTotal = item.lines.reduce((sum, line) => sum + Number(line.gross), 0)
                 const difference = Number(item.difference)
                 return (
-                  <tr key={item.id}>
-                    <td>
-                      <div className="q-table-turn">
-                        <strong>{formatDateFromIsoString(item.shift.date)}</strong>
-                        <span>
-                          {formatShiftType(item.shift.type)} · {selectedLocationName || 'Sucursal'}
-                        </span>
-                        {item.cashBreakdown ? (
-                          <div className="q-closing-breakdown-ticket">
-                            {cashDenominationOptions
-                              .filter((denomination) => Number(item.cashBreakdown?.[denomination.key] || 0) > 0)
-                              .map((denomination) => {
-                                const quantity = Number(item.cashBreakdown?.[denomination.key] || 0)
-                                const subtotal = quantity * denomination.value
-                                return (
-                                  <p key={`${item.id}-${denomination.key}`} className="q-mono">
-                                    {denomination.label} × {quantity} = {formatMoney(subtotal)}
-                                  </p>
-                                )
-                              })}
+                  <Fragment key={item.id}>
+                    <tr className={isVoided ? 'q-row-inactive' : ''}>
+                      <td>
+                        <div className="q-table-turn">
+                          <strong>{formatDateFromIsoString(item.shift.date)}</strong>
+                          <span>
+                            {formatShiftType(item.shift.type)} · {selectedLocationName || 'Sucursal'}
+                          </span>
+                          {item.cashBreakdown ? (
+                            <div className="q-closing-breakdown-ticket">
+                              {cashDenominationOptions
+                                .filter((denomination) => Number(item.cashBreakdown?.[denomination.key] || 0) > 0)
+                                .map((denomination) => {
+                                  const quantity = Number(item.cashBreakdown?.[denomination.key] || 0)
+                                  const subtotal = quantity * denomination.value
+                                  return (
+                                    <p key={`${item.id}-${denomination.key}`} className="q-mono">
+                                      {denomination.label} × {quantity} = {formatMoney(subtotal)}
+                                    </p>
+                                  )
+                                })}
+                            </div>
+                          ) : null}
+                        </div>
+                      </td>
+                      <td>{item.closedBy?.name || '—'}</td>
+                      <td className="is-right q-mono">{formatMoney(grossTotal)}</td>
+                      <td className="is-right q-mono">{formatMoney(difference)}</td>
+                      <td>
+                        {isVoided ? (
+                          <span className="q-chip voided">Anulado</span>
+                        ) : (
+                          <span className={`q-chip ${difference >= 0 ? 'ok' : 'falt'}`}>
+                            {difference >= 0 ? '✓ Cuadró' : `Faltante −${formatMoney(Math.abs(difference))}`}
+                          </span>
+                        )}
+                      </td>
+                      <td>
+                        <button
+                          type="button"
+                          className="q-link-btn"
+                          onClick={() => setExpandedClosingId((prev) => (prev === item.id ? '' : item.id))}
+                        >
+                          {isExpanded ? 'Ocultar' : 'Ver'}
+                        </button>
+                      </td>
+                      <td>
+                        {canVoidClosing && !isVoided ? (
+                          <button type="button" className="q-link-btn q-link-danger" onClick={() => openVoidClosingModal(item)}>
+                            Anular
+                          </button>
+                        ) : (
+                          <span className="q-table-muted">—</span>
+                        )}
+                      </td>
+                    </tr>
+                    {isExpanded ? (
+                      <tr className="q-closing-detail-row">
+                        <td colSpan={7}>
+                          <div className="q-closing-detail">
+                            <p className="q-table-muted">Responsable: {item.closedBy?.name || '—'}</p>
+                            {isVoided ? (
+                              <>
+                                <p className="q-error-text">
+                                  Motivo de anulación: {item.shift.voidReason || 'Sin motivo'}
+                                </p>
+                                <p className="q-table-muted">
+                                  Anuló: {item.shift.voidedBy?.name || 'Usuario'} ·{' '}
+                                  {item.shift.voidedAt ? formatDateTimeFromIsoString(item.shift.voidedAt) : '—'}
+                                </p>
+                              </>
+                            ) : (
+                              <p className="q-table-muted">Cierre activo</p>
+                            )}
                           </div>
-                        ) : null}
-                      </div>
-                    </td>
-                    <td>{item.closedBy?.name || '—'}</td>
-                    <td className="is-right q-mono">{formatMoney(grossTotal)}</td>
-                    <td className="is-right q-mono">{formatMoney(difference)}</td>
-                    <td>
-                      <span className={`q-chip ${difference >= 0 ? 'ok' : 'falt'}`}>
-                        {difference >= 0 ? '✓ Cuadró' : `Faltante −${formatMoney(Math.abs(difference))}`}
-                      </span>
-                    </td>
-                  </tr>
+                        </td>
+                      </tr>
+                    ) : null}
+                  </Fragment>
                 )
               })}
             </tbody>
           </table>
+        </div>
+      ) : null}
+      {voidTargetClosing ? (
+        <div className="q-modal-overlay" role="presentation" onClick={closeVoidClosingModal}>
+          <section className="q-modal-card q-void-closing-modal" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
+            <header className="q-close-form-header">
+              <h2>Anular cierre</h2>
+              <button type="button" className="q-link-btn" onClick={closeVoidClosingModal}>
+                Cerrar
+              </button>
+            </header>
+            <p className="q-table-muted">
+              El cierre quedará visible como anulado y saldrá de todos los cálculos.
+            </p>
+            <label className="q-field">
+              Motivo de anulación
+              <textarea
+                value={voidReason}
+                onChange={(event) => setVoidReason(event.target.value)}
+                rows={3}
+                required
+              />
+            </label>
+            {voidError ? <p className="q-error-text">{voidError}</p> : null}
+            <div className="q-table-actions">
+              <button className="q-btn q-btn-inline" type="button" disabled={savingVoidClosing} onClick={handleConfirmVoidClosing}>
+                {savingVoidClosing ? 'Anulando...' : 'Confirmar anulación'}
+              </button>
+              <button type="button" className="q-link-btn" onClick={closeVoidClosingModal}>
+                Cancelar
+              </button>
+            </div>
+          </section>
         </div>
       ) : null}
     </section>
@@ -4046,7 +4231,7 @@ export function AppShellPage() {
                         >
                           Editar
                         </button>
-                        {counterparty.active ? (
+                        {canCreateEnvelope && counterparty.active ? (
                           <button
                             type="button"
                             className="q-link-btn q-link-danger"
@@ -4055,7 +4240,8 @@ export function AppShellPage() {
                           >
                             Eliminar
                           </button>
-                        ) : (
+                        ) : null}
+                        {canCreateEnvelope && !counterparty.active ? (
                           <button
                             type="button"
                             className="q-link-btn"
@@ -4064,7 +4250,7 @@ export function AppShellPage() {
                           >
                             Reactivar
                           </button>
-                        )}
+                        ) : null}
                       </td>
                     </tr>
                   ))}
@@ -4197,7 +4383,7 @@ export function AppShellPage() {
           <h1>Proveedores y adeudos</h1>
           <p>Control de cuentas por pagar y pagos a proveedores/prestamistas.</p>
         </div>
-        {canCreateEnvelope ? (
+        {canManagePayables ? (
           <button
             className="q-btn q-btn-inline"
             type="button"
@@ -4245,7 +4431,11 @@ export function AppShellPage() {
               <button
                 type="button"
                 className="q-link-btn"
-                onClick={() => setShowInlinePayableCounterpartyForm((prev) => !prev)}
+                onClick={() => {
+                  setPayableCounterpartyEditId('')
+                  setPayableCounterpartyDraft({ name: '', type: 'SUPPLIER', phone: '', paymentTerms: '', notes: '' })
+                  setShowInlinePayableCounterpartyForm((prev) => !prev)
+                }}
               >
                 {showInlinePayableCounterpartyForm ? 'Cerrar alta rápida' : 'Nuevo acreedor'}
               </button>
@@ -4372,6 +4562,28 @@ export function AppShellPage() {
                     }
                   />
                 </label>
+                <label className="q-field">
+                  Términos (opcional)
+                  <input
+                    type="text"
+                    value={payableCounterpartyDraft.paymentTerms}
+                    onChange={(event) =>
+                      setPayableCounterpartyDraft((prev) => ({ ...prev, paymentTerms: event.target.value }))
+                    }
+                  />
+                </label>
+              </div>
+              <div className="q-field-grid-3">
+                <label className="q-field">
+                  Notas (opcional)
+                  <input
+                    type="text"
+                    value={payableCounterpartyDraft.notes}
+                    onChange={(event) =>
+                      setPayableCounterpartyDraft((prev) => ({ ...prev, notes: event.target.value }))
+                    }
+                  />
+                </label>
               </div>
               <button
                 className="q-btn q-btn-inline"
@@ -4379,7 +4591,7 @@ export function AppShellPage() {
                 disabled={savingPayables}
                 onClick={() => handleCreateInlinePayableCounterparty()}
               >
-                {savingPayables ? 'Guardando...' : 'Crear acreedor'}
+                {savingPayables ? 'Guardando...' : payableCounterpartyEditId ? 'Guardar acreedor' : 'Crear acreedor'}
               </button>
             </div>
           ) : null}
@@ -4410,13 +4622,33 @@ export function AppShellPage() {
                   </div>
                   <strong className="q-mono q-payable-saldo">{formatMoney(row.saldo)}</strong>
                 </div>
-                <button
-                  type="button"
-                  className="q-link-btn"
-                  onClick={() => setExpandedCounterpartyId((prev) => (prev === row.counterparty.id ? '' : row.counterparty.id))}
-                >
-                  {isExpanded ? 'Ocultar detalle' : 'Ver detalle'}
-                </button>
+                <div className="q-table-actions">
+                  <button
+                    type="button"
+                    className="q-link-btn"
+                    onClick={() => setExpandedCounterpartyId((prev) => (prev === row.counterparty.id ? '' : row.counterparty.id))}
+                  >
+                    {isExpanded ? 'Ocultar detalle' : 'Ver detalle'}
+                  </button>
+                  <button
+                    type="button"
+                    className="q-link-btn"
+                    onClick={() => {
+                      setPayableCounterpartyEditId(row.counterparty.id)
+                      setPayableCounterpartyDraft({
+                        name: row.counterparty.name,
+                        type: row.counterparty.type,
+                        phone: row.counterparty.phone || '',
+                        paymentTerms: row.counterparty.paymentTerms || '',
+                        notes: row.counterparty.notes || '',
+                      })
+                      setShowPayableForm(true)
+                      setShowInlinePayableCounterpartyForm(true)
+                    }}
+                  >
+                    Editar acreedor
+                  </button>
+                </div>
 
                 {isExpanded ? (
                   <div className="q-payable-purchases">
@@ -4433,6 +4665,9 @@ export function AppShellPage() {
                               <p className="q-table-muted">
                                 {formatPayableKind(purchase.kind)} · {formatDateFromIsoString(purchase.date)}
                               </p>
+                              {purchase.createdBy?.name ? (
+                                <p className="q-table-muted">Registró: {purchase.createdBy.name}</p>
+                              ) : null}
                             </div>
                             <span className={`q-chip ${payableStatusChipClass(purchase.status)}`}>
                               {formatPayableStatus(purchase.status)}
@@ -4569,6 +4804,7 @@ export function AppShellPage() {
                                   <span>
                                     {payment.method}
                                     {payment.moneyAccount?.name ? ` · ${payment.moneyAccount.name}` : ''}
+                                    {payment.createdBy?.name ? ` · Registró: ${payment.createdBy.name}` : ''}
                                   </span>
                                 </div>
                               ))}

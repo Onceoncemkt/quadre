@@ -252,6 +252,7 @@ envelopesRouter.get(
             closing: {
               shift: {
                 location: { businessId },
+                voidedAt: null,
                 date: {
                   gte: today,
                   lt: tomorrow,
