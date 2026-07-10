@@ -753,6 +753,61 @@ body {
   gap: 10px;
   align-items: end;
 }
+.q-requisition-cart-search-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 150px;
+  gap: 10px;
+}
+
+.q-requisition-cart-search input {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.q-requisition-search-results {
+  display: grid;
+  gap: 8px;
+}
+
+.q-requisition-search-item {
+  border: 1px solid var(--linea);
+  border-radius: 10px;
+  padding: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.q-requisition-search-item p {
+  margin: 4px 0 0;
+}
+
+.q-requisition-search-item-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.q-requisition-cart-groups {
+  margin-top: 2px;
+}
+
+.q-requisition-cart-group {
+  display: grid;
+  gap: 10px;
+}
+
+.q-requisition-cart-group-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.q-requisition-cart-group-header h4 {
+  margin: 0;
+}
 
 .q-modal-overlay {
   position: fixed;

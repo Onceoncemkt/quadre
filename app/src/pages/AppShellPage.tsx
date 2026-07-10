@@ -576,7 +576,8 @@ export function AppShellPage() {
   const [phoneCaptureCounterpartyId, setPhoneCaptureCounterpartyId] = useState('')
   const [phoneCaptureValue, setPhoneCaptureValue] = useState('')
   const [showRequisitionForm, setShowRequisitionForm] = useState(false)
-  const [showAllRequisitionItems, setShowAllRequisitionItems] = useState(false)
+  const [requisitionSearch, setRequisitionSearch] = useState('')
+  const [requisitionSearchQty, setRequisitionSearchQty] = useState(1)
   const [savingRequisition, setSavingRequisition] = useState(false)
   const [requisitionFormError, setRequisitionFormError] = useState('')
   const [requisitionsSuccess, setRequisitionsSuccess] = useState('')
@@ -610,7 +611,7 @@ export function AppShellPage() {
   const [newRequisitionDraft, setNewRequisitionDraft] = useState<NewRequisitionDraft>({
     counterpartyId: '',
     notes: '',
-    lines: [{ itemId: '', qty: 1, unitPrice: 0 }],
+    lines: [],
   })
   const [receiveDraft, setReceiveDraft] = useState<ReceiveDraft>({
     counterpartyId: '',
@@ -913,17 +914,20 @@ export function AppShellPage() {
   ])
 
   useEffect(() => {
-    if (newRequisitionDraft.counterpartyId) return
     const selectedItemIds = newRequisitionDraft.lines.map((line) => line.itemId).filter(Boolean)
-    if (!selectedItemIds.length || selectedItemIds.length !== newRequisitionDraft.lines.length) return
+    if (!selectedItemIds.length || selectedItemIds.length !== newRequisitionDraft.lines.length) {
+      if (!newRequisitionDraft.counterpartyId) return
+      setNewRequisitionDraft((prev) => ({ ...prev, counterpartyId: '' }))
+      return
+    }
     const defaults = selectedItemIds
       .map((itemId) => businessItems.find((item) => item.id === itemId)?.defaultCounterpartyId || null)
       .filter((value): value is string => Boolean(value))
-    if (defaults.length !== selectedItemIds.length) return
     const uniqueDefaults = [...new Set(defaults)]
-    if (uniqueDefaults.length === 1) {
-      setNewRequisitionDraft((prev) => ({ ...prev, counterpartyId: uniqueDefaults[0] }))
-    }
+    const nextCounterpartyId =
+      defaults.length === selectedItemIds.length && uniqueDefaults.length === 1 ? uniqueDefaults[0] : ''
+    if (newRequisitionDraft.counterpartyId === nextCounterpartyId) return
+    setNewRequisitionDraft((prev) => ({ ...prev, counterpartyId: nextCounterpartyId }))
   }, [businessItems, newRequisitionDraft.counterpartyId, newRequisitionDraft.lines])
 
   const selectedLocationName = useMemo(() => {
@@ -937,33 +941,63 @@ export function AppShellPage() {
     () => counterparties.filter((counterparty) => counterparty.active),
     [counterparties],
   )
-  const selectedRequisitionCounterparty = useMemo(
-    () => activeCounterparties.find((counterparty) => counterparty.id === newRequisitionDraft.counterpartyId) || null,
-    [activeCounterparties, newRequisitionDraft.counterpartyId],
+  const requisitionSearchResults = useMemo(() => {
+    const query = requisitionSearch.trim().toLowerCase()
+    const source = activeBusinessItems.filter((item) => !newRequisitionDraft.lines.some((line) => line.itemId === item.id))
+    if (!query) return source.slice(0, 12)
+    const startsWith = source.filter((item) => item.name.toLowerCase().startsWith(query))
+    const includes = source.filter(
+      (item) => !item.name.toLowerCase().startsWith(query) && item.name.toLowerCase().includes(query),
+    )
+    return [...startsWith, ...includes].slice(0, 12)
+  }, [activeBusinessItems, newRequisitionDraft.lines, requisitionSearch])
+  const requisitionCounterpartyById = useMemo(
+    () =>
+      activeCounterparties.reduce<Record<string, Counterparty>>((acc, counterparty) => {
+        acc[counterparty.id] = counterparty
+        return acc
+      }, {}),
+    [activeCounterparties],
   )
-  const preferredRequisitionItems = useMemo(() => {
-    if (!selectedRequisitionCounterparty) return activeBusinessItems
-    return activeBusinessItems.filter((item) => item.defaultCounterpartyId === selectedRequisitionCounterparty.id)
-  }, [activeBusinessItems, selectedRequisitionCounterparty])
-  const hasPreferredRequisitionItems = useMemo(
-    () => preferredRequisitionItems.length > 0,
-    [preferredRequisitionItems],
+  const requisitionLinesWithItem = useMemo(
+    () =>
+      newRequisitionDraft.lines
+        .map((line) => ({ line, item: activeBusinessItems.find((item) => item.id === line.itemId) || null }))
+        .filter((entry): entry is { line: RequisitionLineDraft; item: BusinessItem } => Boolean(entry.item)),
+    [activeBusinessItems, newRequisitionDraft.lines],
   )
-  const otherRequisitionItems = useMemo(() => {
-    if (!selectedRequisitionCounterparty) return []
-    return activeBusinessItems.filter((item) => item.defaultCounterpartyId !== selectedRequisitionCounterparty.id)
-  }, [activeBusinessItems, selectedRequisitionCounterparty])
-  const defaultVisibleRequisitionItems = useMemo(() => {
-    if (!selectedRequisitionCounterparty) return activeBusinessItems
-    if (!hasPreferredRequisitionItems) return activeBusinessItems
-    return showAllRequisitionItems ? activeBusinessItems : preferredRequisitionItems
-  }, [
-    activeBusinessItems,
-    hasPreferredRequisitionItems,
-    preferredRequisitionItems,
-    selectedRequisitionCounterparty,
-    showAllRequisitionItems,
-  ])
+  const requisitionCartGroups = useMemo(() => {
+    const groups: Array<{
+      providerKey: string
+      providerName: string
+      subtotal: number
+      lines: Array<{ line: RequisitionLineDraft; item: BusinessItem }>
+    }> = []
+    const byProvider = new Map<
+      string,
+      {
+        providerKey: string
+        providerName: string
+        subtotal: number
+        lines: Array<{ line: RequisitionLineDraft; item: BusinessItem }>
+      }
+    >()
+    requisitionLinesWithItem.forEach((entry) => {
+      const providerId = entry.item.defaultCounterpartyId || ''
+      const providerName = providerId
+        ? requisitionCounterpartyById[providerId]?.name || 'Proveedor sin nombre'
+        : 'Sin proveedor habitual'
+      const providerKey = providerId || 'NO_DEFAULT'
+      if (!byProvider.has(providerKey)) {
+        byProvider.set(providerKey, { providerKey, providerName, subtotal: 0, lines: [] })
+      }
+      const group = byProvider.get(providerKey)!
+      group.lines.push(entry)
+      group.subtotal += entry.line.qty * entry.line.unitPrice
+    })
+    byProvider.forEach((group) => groups.push(group))
+    return groups.sort((a, b) => a.providerName.localeCompare(b.providerName, 'es'))
+  }, [requisitionCounterpartyById, requisitionLinesWithItem])
   const gastosMonthLabel = useMemo(() => formatMonthLabel(gastosMonth), [gastosMonth])
   const pnlMonthLabel = useMemo(() => formatMonthLabel(pnlMonth), [pnlMonth])
   const expensesMonthTotal = useMemo(
@@ -1566,22 +1600,15 @@ export function AppShellPage() {
     setNewRequisitionDraft({
       counterpartyId: '',
       notes: '',
-      lines: [{ itemId: '', qty: 1, unitPrice: 0 }],
+      lines: [],
     })
-    setShowAllRequisitionItems(false)
+    setRequisitionSearch('')
+    setRequisitionSearchQty(1)
     setRequisitionFormError('')
-  }
-
-  function addRequisitionLine() {
-    setNewRequisitionDraft((prev) => ({
-      ...prev,
-      lines: [...prev.lines, { itemId: '', qty: 1, unitPrice: 0 }],
-    }))
   }
 
   function removeRequisitionLine(index: number) {
     setNewRequisitionDraft((prev) => {
-      if (prev.lines.length <= 1) return prev
       return { ...prev, lines: prev.lines.filter((_, lineIndex) => lineIndex !== index) }
     })
   }
@@ -1594,6 +1621,36 @@ export function AppShellPage() {
       lines[index] = { ...current, ...next }
       return { ...prev, lines }
     })
+  }
+
+  function addRequisitionItemToCart(itemId: string) {
+    const item = activeBusinessItems.find((entry) => entry.id === itemId)
+    if (!item) return
+    const nextQty = Math.max(asNumber(String(requisitionSearchQty)), 0.001)
+    setNewRequisitionDraft((prev) => {
+      const existingIndex = prev.lines.findIndex((line) => line.itemId === itemId)
+      if (existingIndex >= 0) {
+        const lines = [...prev.lines]
+        lines[existingIndex] = {
+          ...lines[existingIndex],
+          qty: Number((lines[existingIndex].qty + nextQty).toFixed(3)),
+        }
+        return { ...prev, lines }
+      }
+      return {
+        ...prev,
+        lines: [
+          ...prev.lines,
+          {
+            itemId,
+            qty: nextQty,
+            unitPrice: asDecimal(item.lastPrice),
+          },
+        ],
+      }
+    })
+    setRequisitionSearch('')
+    setRequisitionSearchQty(1)
   }
 
   function openReceiveModal(requisition: RequisitionItem) {
@@ -2086,6 +2143,10 @@ export function AppShellPage() {
   async function handleCreateRequisition(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (!token || !selectedLocationId) return
+    if (!newRequisitionDraft.lines.length) {
+      setRequisitionFormError('Agrega al menos un producto al carrito')
+      return
+    }
     if (!newRequisitionDraft.lines.every((line) => line.itemId)) {
       setRequisitionFormError('Selecciona un insumo en cada línea')
       return
@@ -2622,59 +2683,58 @@ export function AppShellPage() {
               </header>
               <form className="q-close-form-grid" onSubmit={handleCreateRequisition}>
                 <section className="q-card q-close-form-main">
-                  <div className="q-field-grid-2">
-                    <label className="q-field">
-                      Proveedor (opcional)
-                      <select
-                        value={newRequisitionDraft.counterpartyId}
-                        onChange={(event) => {
-                          setNewRequisitionDraft((prev) => ({
-                            ...prev,
-                            counterpartyId: event.target.value,
-                          }))
-                          setShowAllRequisitionItems(false)
-                        }}
-                      >
-                        <option value="">Sin asignar</option>
-                        {activeCounterparties.map((counterparty) => (
-                          <option key={counterparty.id} value={counterparty.id}>
-                            {counterparty.name}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label className="q-field">
-                      Notas
+                  <h3>Carrito de insumos</h3>
+                  <div className="q-requisition-cart-search-row">
+                    <label className="q-field q-requisition-cart-search">
+                      Buscar producto
                       <input
                         type="text"
-                        placeholder="Opcional"
-                        value={newRequisitionDraft.notes}
-                        onChange={(event) =>
-                          setNewRequisitionDraft((prev) => ({ ...prev, notes: event.target.value }))
-                        }
+                        placeholder="Escribe nombre de insumo…"
+                        value={requisitionSearch}
+                        onChange={(event) => setRequisitionSearch(event.target.value)}
+                      />
+                    </label>
+                    <label className="q-field q-requisition-cart-qty">
+                      Cantidad
+                      <input
+                        type="number"
+                        min={0.001}
+                        step="0.001"
+                        value={requisitionSearchQty}
+                        onChange={(event) => setRequisitionSearchQty(asNumber(event.target.value))}
                       />
                     </label>
                   </div>
-
-                  <h3>Líneas</h3>
-                  {selectedRequisitionCounterparty && hasPreferredRequisitionItems ? (
-                    <div className="q-actions-row">
-                      <button
-                        type="button"
-                        className="q-link-btn"
-                        onClick={() => setShowAllRequisitionItems((prev) => !prev)}
-                      >
-                        {showAllRequisitionItems
-                          ? `Mostrar solo insumos habituales de ${selectedRequisitionCounterparty.name}`
-                          : 'Mostrar todos los insumos'}
-                      </button>
-                    </div>
-                  ) : null}
-                  {selectedRequisitionCounterparty && !hasPreferredRequisitionItems ? (
-                    <p className="q-table-muted">
-                      Este proveedor no tiene insumos habituales — asígnalos desde el Catálogo.
-                    </p>
-                  ) : null}
+                  <div className="q-requisition-search-results">
+                    {requisitionSearchResults.map((item) => {
+                      const providerName = item.defaultCounterpartyId
+                        ? requisitionCounterpartyById[item.defaultCounterpartyId]?.name || 'Proveedor sin nombre'
+                        : 'Sin proveedor habitual'
+                      return (
+                        <article className="q-requisition-search-item" key={item.id}>
+                          <div>
+                            <strong>{item.name}</strong>
+                            <p className="q-table-muted">
+                              {item.unit} · {providerName}
+                            </p>
+                          </div>
+                          <div className="q-requisition-search-item-actions">
+                            <span className="q-mono">{formatMoney(asDecimal(item.lastPrice))}</span>
+                            <button
+                              type="button"
+                              className="q-btn q-btn-inline"
+                              onClick={() => addRequisitionItemToCart(item.id)}
+                            >
+                              Agregar
+                            </button>
+                          </div>
+                        </article>
+                      )
+                    })}
+                    {!requisitionSearchResults.length ? (
+                      <p className="q-table-muted">No hay más productos que coincidan con la búsqueda.</p>
+                    ) : null}
+                  </div>
                   {!activeBusinessItems.length ? (
                     <article className="q-card q-inline-quick-item">
                       <h4>No hay insumos en catálogo</h4>
@@ -2728,103 +2788,68 @@ export function AppShellPage() {
                       {quickItemError ? <p className="q-error-text">{quickItemError}</p> : null}
                     </article>
                   ) : null}
-
-                  <div className="q-lines-wrap">
-                    {newRequisitionDraft.lines.map((line, index) => {
-                      const selectedLineItem = activeBusinessItems.find((item) => item.id === line.itemId) || null
-                      const lineVisibleItems =
-                        selectedLineItem &&
-                        !defaultVisibleRequisitionItems.some((item) => item.id === selectedLineItem.id)
-                          ? [selectedLineItem, ...defaultVisibleRequisitionItems]
-                          : defaultVisibleRequisitionItems
-                      const hasOtherGroup =
-                        selectedRequisitionCounterparty && !showAllRequisitionItems && hasPreferredRequisitionItems
-                      return (
-                        <article className="q-line-row" key={`req-line-${index}`}>
-                          <label className="q-field">
-                            Insumo
-                            <select
-                              value={line.itemId}
-                              onChange={(event) => {
-                                const itemId = event.target.value
-                                const selectedItem = activeBusinessItems.find((item) => item.id === itemId)
-                                updateRequisitionLine(index, {
-                                  itemId,
-                                  unitPrice: selectedItem ? asDecimal(selectedItem.lastPrice) : 0,
-                                })
-                              }}
-                            >
-                              <option value="">Selecciona un insumo</option>
-                              {hasOtherGroup ? (
-                                <>
-                                  <optgroup
-                                    label={`Habituales de ${selectedRequisitionCounterparty.name}`}
-                                  >
-                                    {preferredRequisitionItems.map((item) => (
-                                      <option key={item.id} value={item.id}>
-                                        {item.name} ({item.unit})
-                                      </option>
-                                    ))}
-                                  </optgroup>
-                                  <optgroup label="Otros insumos">
-                                    {otherRequisitionItems.map((item) => (
-                                      <option key={item.id} value={item.id}>
-                                        {item.name} ({item.unit})
-                                      </option>
-                                    ))}
-                                  </optgroup>
-                                </>
-                              ) : (
-                                lineVisibleItems.map((item) => (
-                                  <option key={item.id} value={item.id}>
-                                    {item.name} ({item.unit})
-                                  </option>
-                                ))
-                              )}
-                            </select>
-                          </label>
-                          <label className="q-field">
-                            Cantidad
-                            <input
-                              type="number"
-                              min={0}
-                              step="0.001"
-                              value={line.qty}
-                              onChange={(event) => updateRequisitionLine(index, { qty: asNumber(event.target.value) })}
-                            />
-                          </label>
-                          <label className="q-field">
-                            Precio unitario
-                            <input
-                              type="number"
-                              min={0}
-                              step="0.01"
-                              value={line.unitPrice}
-                              onChange={(event) =>
-                                updateRequisitionLine(index, { unitPrice: asNumber(event.target.value) })
-                              }
-                            />
-                          </label>
-                          <button
-                            type="button"
-                            className="q-link-btn"
-                            onClick={() => removeRequisitionLine(index)}
-                            disabled={newRequisitionDraft.lines.length <= 1}
-                          >
-                            Quitar
-                          </button>
-                        </article>
-                      )
-                    })}
+                  <div className="q-lines-wrap q-requisition-cart-groups">
+                    {requisitionCartGroups.map((group) => (
+                      <article className="q-card q-requisition-cart-group" key={group.providerKey}>
+                        <header className="q-requisition-cart-group-header">
+                          <h4>{group.providerName}</h4>
+                          <strong className="q-mono">{formatMoney(group.subtotal)}</strong>
+                        </header>
+                        {group.lines.map(({ line, item }) => {
+                          const index = newRequisitionDraft.lines.findIndex((entry) => entry.itemId === line.itemId)
+                          if (index < 0) return null
+                          return (
+                            <div className="q-line-row" key={item.id}>
+                              <label className="q-field">
+                                Producto
+                                <input type="text" value={`${item.name} (${item.unit})`} readOnly />
+                              </label>
+                              <label className="q-field">
+                                Cantidad
+                                <input
+                                  type="number"
+                                  min={0.001}
+                                  step="0.001"
+                                  value={line.qty}
+                                  onChange={(event) => updateRequisitionLine(index, { qty: asNumber(event.target.value) })}
+                                />
+                              </label>
+                              <label className="q-field">
+                                Precio unitario
+                                <input
+                                  type="number"
+                                  min={0}
+                                  step="0.01"
+                                  value={line.unitPrice}
+                                  onChange={(event) =>
+                                    updateRequisitionLine(index, { unitPrice: asNumber(event.target.value) })
+                                  }
+                                />
+                              </label>
+                              <p className="q-mono">{formatMoney(line.qty * line.unitPrice)}</p>
+                              <button type="button" className="q-link-btn" onClick={() => removeRequisitionLine(index)}>
+                                Quitar
+                              </button>
+                            </div>
+                          )
+                        })}
+                      </article>
+                    ))}
+                    {!requisitionCartGroups.length ? (
+                      <p className="q-table-muted">El carrito está vacío. Busca un producto y agrégalo.</p>
+                    ) : null}
                   </div>
-                  <button
-                    type="button"
-                    className="q-link-btn"
-                    onClick={addRequisitionLine}
-                    disabled={!activeBusinessItems.length}
-                  >
-                    + Agregar línea
-                  </button>
+                  <label className="q-field">
+                    Notas
+                    <input
+                      type="text"
+                      placeholder="Opcional"
+                      value={newRequisitionDraft.notes}
+                      onChange={(event) =>
+                        setNewRequisitionDraft((prev) => ({ ...prev, notes: event.target.value }))
+                      }
+                    />
+                  </label>
                   {requisitionFormError ? <p className="q-error-text">{requisitionFormError}</p> : null}
                   <button className="q-btn q-btn-inline" type="submit" disabled={savingRequisition || !activeBusinessItems.length}>
                     {savingRequisition ? 'Guardando...' : 'Crear requisición'}
