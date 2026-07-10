@@ -657,6 +657,122 @@ requisitionsRouter.post('/locations/:locationId/requisitions', authMiddleware, a
   }
 });
 
+requisitionsRouter.post('/locations/:locationId/requisitions/batch', authMiddleware, async (req, res, next) => {
+  try {
+    const { locationId } = req.params;
+    const parsed = createRequisitionSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ ok: false, error: 'Payload inválido', details: parsed.error.flatten() });
+      return;
+    }
+
+    const { location, membership } = await getMembershipForLocation({
+      userId: req.userId,
+      locationId,
+    });
+
+    if (!location) {
+      res.status(404).json({ ok: false, error: 'Location no encontrada' });
+      return;
+    }
+
+    if (!membership || !managerRoles.includes(membership.role)) {
+      res.status(403).json({ ok: false, error: 'No autorizado para crear requisiciones en esta sucursal' });
+      return;
+    }
+
+    const itemIds = [...new Set(parsed.data.lines.map((line) => line.itemId))];
+    const items = await prisma.item.findMany({
+      where: {
+        id: { in: itemIds },
+        businessId: location.businessId,
+        active: true,
+      },
+      select: {
+        id: true,
+        lastPrice: true,
+        defaultCounterpartyId: true,
+      },
+    });
+    const itemsMap = new Map(items.map((item) => [item.id, item]));
+    const missingItem = itemIds.find((itemId) => !itemsMap.has(itemId));
+    if (missingItem) {
+      res.status(400).json({ ok: false, error: 'Hay líneas con items inválidos para este negocio' });
+      return;
+    }
+
+    const normalizedLines = parsed.data.lines.map((line) => {
+      const item = itemsMap.get(line.itemId);
+      const unitPrice =
+        typeof line.unitPrice === 'number'
+          ? Number(line.unitPrice.toFixed(2))
+          : Number(Number(item.lastPrice || 0).toFixed(2));
+      const qty = Number(Number(line.qty).toFixed(3));
+      return {
+        itemId: line.itemId,
+        qty,
+        unitPrice,
+        defaultCounterpartyId: item.defaultCounterpartyId || null,
+      };
+    });
+
+    const groupedByCounterparty = new Map();
+    normalizedLines.forEach((line) => {
+      const key = line.defaultCounterpartyId || 'NO_DEFAULT_COUNTERPARTY';
+      if (!groupedByCounterparty.has(key)) groupedByCounterparty.set(key, []);
+      groupedByCounterparty.get(key).push(line);
+    });
+
+    const requisitions = await prisma.$transaction(async (tx) => {
+      const latestFolio = await tx.requisition.findFirst({
+        where: {
+          location: {
+            businessId: location.businessId,
+          },
+        },
+        orderBy: { folio: 'desc' },
+        select: { folio: true },
+      });
+      let nextFolio = (latestFolio?.folio || 0) + 1;
+
+      const created = [];
+      for (const [counterpartyKey, lines] of groupedByCounterparty.entries()) {
+        const counterpartyId = counterpartyKey === 'NO_DEFAULT_COUNTERPARTY' ? null : counterpartyKey;
+        const estimatedTotal = Number(lines.reduce((sum, line) => sum + line.qty * line.unitPrice, 0).toFixed(2));
+
+        const requisition = await tx.requisition.create({
+          data: {
+            locationId,
+            counterpartyId,
+            folio: nextFolio++,
+            status: 'PENDING_APPROVAL',
+            requestedById: req.userId,
+            estimatedTotal,
+            notes: parsed.data.notes,
+            lines: {
+              create: lines.map((line) => ({
+                itemId: line.itemId,
+                qty: line.qty,
+                unitPrice: line.unitPrice,
+              })),
+            },
+          },
+          include: {
+            lines: true,
+          },
+        });
+        created.push(requisition);
+      }
+
+      return created;
+    });
+
+    res.status(201).json({ ok: true, requisitions });
+  } catch (error) {
+    next(error);
+  }
+});
+
 requisitionsRouter.post('/requisitions/:id/approve', authMiddleware, async (req, res, next) => {
   try {
     const { id } = req.params;

@@ -436,6 +436,25 @@ export async function createRequisition({
   })
 }
 
+export async function createRequisitionBatch({
+  token,
+  locationId,
+  payload,
+}: {
+  token: string
+  locationId: string
+  payload: {
+    notes?: string
+    lines: Array<{ itemId: string; qty: number; unitPrice?: number }>
+  }
+}) {
+  return request<{ requisitions: RequisitionItem[] }>(`/locations/${locationId}/requisitions/batch`, {
+    method: 'POST',
+    token,
+    body: payload,
+  })
+}
+
 export async function patchRequisition({
   token,
   requisitionId,

@@ -7,11 +7,11 @@ import {
   createBusinessItem,
   createBusinessMember,
   createBusinessPurchase,
+  createRequisitionBatch,
   createEnvelope,
   createEnvelopeDeposit,
   createExpense,
   createPurchasePayment,
-  createRequisition,
   createShiftClosing,
   deleteEnvelope,
   deleteExpense,
@@ -2168,11 +2168,10 @@ export function AppShellPage() {
     setRequisitionFormError('')
     setRequisitionsSuccess('')
     try {
-      await createRequisition({
+      const response = await createRequisitionBatch({
         token,
         locationId: selectedLocationId,
         payload: {
-          counterpartyId: newRequisitionDraft.counterpartyId || undefined,
           notes: newRequisitionDraft.notes.trim() || undefined,
           lines: newRequisitionDraft.lines.map((line) => ({
             itemId: line.itemId,
@@ -2184,7 +2183,12 @@ export function AppShellPage() {
       await refreshRequisitionsData()
       setShowRequisitionForm(false)
       resetNewRequisitionDraft()
-      setRequisitionsSuccess('Requisición creada correctamente ✓')
+      const createdCount = response.requisitions?.length || 0
+      setRequisitionsSuccess(
+        createdCount > 1
+          ? `${createdCount} requisiciones creadas y separadas por proveedor ✓`
+          : 'Requisición creada correctamente ✓',
+      )
     } catch (error) {
       setRequisitionFormError(error instanceof Error ? error.message : 'No se pudo crear la requisición')
     } finally {
