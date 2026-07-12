@@ -406,6 +406,103 @@ body {
   margin: 0;
 }
 
+.q-ticket {
+  width: min(420px, 100%);
+  display: grid;
+  gap: 14px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--tinta);
+}
+
+.q-ticket-section {
+  display: grid;
+  gap: 4px;
+}
+
+.q-ticket-title {
+  margin: 0 0 2px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--gris);
+}
+
+.q-ticket-line {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.q-ticket-line .amt {
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.q-ticket-sub {
+  padding-left: 14px;
+  color: var(--gris);
+  font-size: 12px;
+}
+
+.q-ticket-divider {
+  border-top: 1px dashed #c9cdc2;
+  margin: 4px 0;
+}
+
+.q-ticket-total {
+  font-weight: 800;
+}
+
+.q-ticket-empty {
+  margin: 0;
+  color: var(--gris);
+}
+
+.q-ticket-result {
+  margin-top: 2px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-align: center;
+}
+
+.q-ticket-result.ok {
+  background: #eafdd2;
+  color: #39610d;
+}
+
+.q-ticket-result.falt {
+  background: #fde9e6;
+  color: var(--falt);
+}
+
+.q-ticket-meta {
+  gap: 2px;
+  color: var(--gris);
+  font-size: 12px;
+}
+
+.q-ticket-meta p {
+  margin: 0;
+}
+
+.q-ticket-evidence a {
+  margin-right: 8px;
+  color: var(--verde);
+  font-weight: 700;
+}
+
+.q-ticket-voided {
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  color: var(--falt);
+}
+
 .q-requisition-detail {
   display: grid;
   gap: 10px;

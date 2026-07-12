@@ -381,6 +381,23 @@ function formatRoutingChannel(channel: (typeof moneyAccountRoutingChannels)[numb
   return 'Otro'
 }
 
+function formatClosingChannel(channel: string) {
+  if (channel === 'RAPPI') return 'Rappi'
+  if (channel === 'UBER_EATS') return 'Uber Eats'
+  if (channel === 'DIDI_FOOD') return 'Didi Food'
+  if (channel === 'PISO') return 'Piso'
+  if (channel === 'EVENTO') return 'Evento'
+  return 'Otro'
+}
+
+function formatPaymentMethod(method: string) {
+  if (method === 'EFECTIVO') return 'Efectivo'
+  if (method === 'TARJETA') return 'Tarjeta'
+  if (method === 'TRANSFERENCIA') return 'Transferencia'
+  if (method === 'APP') return 'App'
+  return 'Otro'
+}
+
 function formatMovementsDayLabel(dateValue: string) {
   const date = new Date(`${dateValue}T00:00:00.000Z`)
   if (Number.isNaN(date.getTime())) return dateValue
@@ -3568,20 +3585,135 @@ export function AppShellPage() {
                       <tr className="q-closing-detail-row">
                         <td colSpan={7}>
                           <div className="q-closing-detail">
-                            <p className="q-table-muted">Responsable: {item.closedBy?.name || '—'}</p>
-                            {isVoided ? (
-                              <>
-                                <p className="q-error-text">
-                                  Motivo de anulación: {item.shift.voidReason || 'Sin motivo'}
-                                </p>
-                                <p className="q-table-muted">
-                                  Anuló: {item.shift.voidedBy?.name || 'Usuario'} ·{' '}
-                                  {item.shift.voidedAt ? formatDateTimeFromIsoString(item.shift.voidedAt) : '—'}
-                                </p>
-                              </>
-                            ) : (
-                              <p className="q-table-muted">Cierre activo</p>
-                            )}
+                            {(() => {
+                              const netTotal = item.lines.reduce((sum, line) => sum + Number(line.net), 0)
+                              const openingCash = Number(item.openingCash)
+                              const withdrawn = Number(item.cashWithdrawn)
+                              const expectedCash = Number(item.expectedCash)
+                              const countedCash = Number(item.countedCash)
+                              const resultClass = difference === 0 ? 'ok' : difference < 0 ? 'falt' : 'ok'
+                              const resultLabel =
+                                difference === 0
+                                  ? 'CUADRÓ ✓'
+                                  : difference < 0
+                                    ? `FALTANTE −${formatMoney(Math.abs(difference))}`
+                                    : `SOBRANTE +${formatMoney(difference)}`
+                              return (
+                                <div className="q-ticket q-mono">
+                                  <div className="q-ticket-section">
+                                    <p className="q-ticket-title">Desglose de ventas</p>
+                                    {item.lines.length ? (
+                                      item.lines.map((line) => {
+                                        const fee = Number(line.feeAmount)
+                                        return (
+                                          <Fragment key={line.id}>
+                                            <div className="q-ticket-line">
+                                              <span>
+                                                {formatClosingChannel(line.channel)} · {formatPaymentMethod(line.method)}
+                                              </span>
+                                              <span className="amt">{formatMoney(Number(line.gross))}</span>
+                                            </div>
+                                            {fee > 0 ? (
+                                              <div className="q-ticket-line q-ticket-sub">
+                                                <span>− {formatMoney(fee)} comisión</span>
+                                                <span className="amt">{formatMoney(Number(line.net))}</span>
+                                              </div>
+                                            ) : null}
+                                          </Fragment>
+                                        )
+                                      })
+                                    ) : (
+                                      <p className="q-ticket-empty">Sin ventas registradas</p>
+                                    )}
+                                    <div className="q-ticket-divider" />
+                                    <div className="q-ticket-line q-ticket-total">
+                                      <span>Total bruto</span>
+                                      <span className="amt">{formatMoney(grossTotal)}</span>
+                                    </div>
+                                    <div className="q-ticket-line q-ticket-total">
+                                      <span>Total neto</span>
+                                      <span className="amt">{formatMoney(netTotal)}</span>
+                                    </div>
+                                  </div>
+
+                                  <div className="q-ticket-section">
+                                    <p className="q-ticket-title">Arqueo de caja</p>
+                                    <div className="q-ticket-line">
+                                      <span>Fondo inicial</span>
+                                      <span className="amt">{formatMoney(openingCash)}</span>
+                                    </div>
+                                    <div className="q-ticket-line">
+                                      <span>Retiros</span>
+                                      <span className="amt">{withdrawn > 0 ? `− ${formatMoney(withdrawn)}` : formatMoney(0)}</span>
+                                    </div>
+                                    <div className="q-ticket-line">
+                                      <span>Efectivo esperado</span>
+                                      <span className="amt">{formatMoney(expectedCash)}</span>
+                                    </div>
+                                    <div className="q-ticket-line">
+                                      <span>Efectivo contado</span>
+                                      <span className="amt">{formatMoney(countedCash)}</span>
+                                    </div>
+                                    <div className="q-ticket-divider" />
+                                    <div className={`q-ticket-result ${resultClass}`}>{resultLabel}</div>
+                                  </div>
+
+                                  {item.cashBreakdown &&
+                                  cashDenominationOptions.some(
+                                    (denomination) => Number(item.cashBreakdown?.[denomination.key] || 0) > 0,
+                                  ) ? (
+                                    <div className="q-ticket-section">
+                                      <p className="q-ticket-title">Desglose de efectivo</p>
+                                      {cashDenominationOptions
+                                        .filter((denomination) => Number(item.cashBreakdown?.[denomination.key] || 0) > 0)
+                                        .map((denomination) => {
+                                          const quantity = Number(item.cashBreakdown?.[denomination.key] || 0)
+                                          return (
+                                            <div className="q-ticket-line" key={`detail-${item.id}-${denomination.key}`}>
+                                              <span>
+                                                {denomination.label} × {quantity}
+                                              </span>
+                                              <span className="amt">{formatMoney(quantity * denomination.value)}</span>
+                                            </div>
+                                          )
+                                        })}
+                                    </div>
+                                  ) : null}
+
+                                  <div className="q-ticket-section q-ticket-meta">
+                                    <div className="q-ticket-divider" />
+                                    <p>
+                                      Cerró {item.closedBy?.name || 'Usuario'} · {formatDateFromIsoString(item.shift.date)}{' '}
+                                      {formatShiftType(item.shift.type)}
+                                    </p>
+                                    {item.closedAt ? <p>Registrado: {formatDateTimeFromIsoString(item.closedAt)}</p> : null}
+                                    {typeof item.ticketCount === 'number' ? <p>Tickets: {item.ticketCount}</p> : null}
+                                    {item.notes ? <p>Notas: {item.notes}</p> : null}
+                                    {item.evidenceUrls?.length ? (
+                                      <p className="q-ticket-evidence">
+                                        Evidencias:{' '}
+                                        {item.evidenceUrls.map((url, index) => (
+                                          <a key={`${item.id}-ev-${index}`} href={url} target="_blank" rel="noreferrer">
+                                            #{index + 1}
+                                          </a>
+                                        ))}
+                                      </p>
+                                    ) : null}
+                                    {isVoided ? (
+                                      <>
+                                        <div className="q-ticket-divider" />
+                                        <p className="q-ticket-voided">ANULADO</p>
+                                        <p className="q-error-text">Motivo: {item.shift.voidReason || 'Sin motivo'}</p>
+                                        <p>
+                                          Anuló: {item.shift.voidedBy?.name || 'Usuario'} ·{' '}
+                                          {item.shift.voidedAt ? formatDateTimeFromIsoString(item.shift.voidedAt) : '—'}
+                                        </p>
+                                      </>
+                                    ) : null}
+                                  </div>
+                                </div>
+                              )
+                            })()}
                           </div>
                         </td>
                       </tr>

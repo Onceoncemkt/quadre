@@ -1216,6 +1216,10 @@ export type ShiftClosingItem = {
   cashBreakdown: Record<string, number> | null
   difference: string
   cashWithdrawn: string
+  ticketCount: number | null
+  notes: string | null
+  evidenceUrls: string[]
+  closedAt: string
   shift: {
     id: string
     date: string
