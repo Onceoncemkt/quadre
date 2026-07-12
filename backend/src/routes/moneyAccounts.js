@@ -86,6 +86,9 @@ function getAccountBalance({ kind, initialBalance, entries, outflows }) {
 }
 
 function getLineAssignedMoneyAccountId({ line, channelMapByChannel, defaultMoneyAccountId }) {
+  // REGLA DE HIERRO: el efectivo vive en el arqueo, nunca en una MoneyAccount,
+  // esté o no mapeado su canal (ej. PISO->Clip no debe arrastrar el efectivo).
+  if (line.method === 'EFECTIVO') return null;
   const mappedId = channelMapByChannel.get(line.channel) || null;
   if (mappedId) return mappedId;
   if (cardMethods.includes(line.method) && defaultMoneyAccountId) return defaultMoneyAccountId;
@@ -117,8 +120,11 @@ function buildSalesWhereClause({ businessId, monthBounds, mappedChannels }) {
     };
   }
 
+  // REGLA DE HIERRO: EFECTIVO nunca entra a una cuenta. El branch por canal
+  // mapeado captura tarjeta/transferencia/APP de ese canal, pero jamás su efectivo.
   return {
     ...baseWhere,
+    method: { not: 'EFECTIVO' },
     OR: [{ method: { in: cardMethods } }, { channel: { in: mappedChannels } }],
   };
 }
@@ -432,6 +438,7 @@ moneyAccountsRouter.delete(
           ? prisma.closingLine.count({
               where: {
                 channel: { in: mappedChannelsForAccount },
+                method: { not: 'EFECTIVO' }, // REGLA DE HIERRO: el efectivo no cuenta como venta ruteada
                 closing: {
                   shift: {
                     voidedAt: null,
