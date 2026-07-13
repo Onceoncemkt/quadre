@@ -273,6 +273,7 @@ model Expense {
   source        ExpenseSource @default(MANUAL)
   purchaseId    String?  @unique
   payrollEntryId String? @unique
+  payrollPeriodId String? // gasto de Sueldos generado al cerrar un periodo de nómina (para reabrir)
   createdById   String?
   createdAt     DateTime @default(now())
 
@@ -280,6 +281,8 @@ model Expense {
   category      ExpenseCategory @relation(fields: [categoryId], references: [id])
   counterparty  Counterparty? @relation(fields: [counterpartyId], references: [id])
   moneyAccount  MoneyAccount? @relation(fields: [moneyAccountId], references: [id], onDelete: SetNull)
+
+  @@index([payrollPeriodId])
 }
 
 enum ExpenseSource {
@@ -546,6 +549,8 @@ model PayrollEntry {
 
   period        PayrollPeriod @relation(fields: [periodId], references: [id], onDelete: Cascade)
   employee      Employee @relation(fields: [employeeId], references: [id])
+
+  @@unique([periodId, employeeId])
 }
 
 // ============================================================

@@ -13,6 +13,7 @@ const { envelopesRouter } = require('./routes/envelopes');
 const { payablesRouter } = require('./routes/payables');
 const { moneyAccountsRouter } = require('./routes/moneyAccounts');
 const { employeesRouter } = require('./routes/employees');
+const { payrollRouter } = require('./routes/payroll');
 
 const app = express();
 
@@ -56,6 +57,7 @@ app.use(envelopesRouter);
 app.use(payablesRouter);
 app.use(moneyAccountsRouter);
 app.use(employeesRouter);
+app.use(payrollRouter);
 
 app.use((err, _req, res, _next) => {
   if (err && err.message === 'CORS origin no permitido') {
