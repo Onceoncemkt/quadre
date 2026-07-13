@@ -1,4 +1,4 @@
-import type { FormEvent } from 'react'
+import type { ChangeEvent, FormEvent } from 'react'
 import { Fragment, useEffect, useMemo, useState } from 'react'
 import {
   approveRequisition,
@@ -47,6 +47,21 @@ import {
   getWaitlist,
   voidShift,
   withdrawEnvelope,
+  getEmployees,
+  createEmployee,
+  patchEmployee,
+  deleteEmployee,
+  getLocationAttendance,
+  createAttendance,
+  patchAttendance,
+  deleteAttendance,
+  importAttendance,
+  getPayrollPeriods,
+  createPayrollPeriod,
+  getPayrollPeriod,
+  putPayrollEntry,
+  closePayrollPeriod,
+  reopenPayrollPeriod,
   type BusinessMember,
   type BusinessItem,
   type ChannelAccountMapItem,
@@ -66,6 +81,10 @@ import {
   type RequisitionStatus,
   type ShiftClosingItem,
   type WaitlistLead,
+  type Employee,
+  type AttendanceEmployeeBucket,
+  type PayrollPeriodItem,
+  type PayrollRow,
 } from '../lib/api'
 import { useAuth } from '../state/auth'
 
@@ -730,6 +749,89 @@ function drawRequisitionTicket(summary: RequisitionTicketSummary) {
   return canvas
 }
 
+function parseYmd(value: string) {
+  const [year, month, day] = value.split('-').map(Number)
+  return new Date(Date.UTC(year, (month || 1) - 1, day || 1))
+}
+
+function ymd(date: Date) {
+  return date.toISOString().slice(0, 10)
+}
+
+function shiftDays(value: string, days: number) {
+  const date = parseYmd(value)
+  date.setUTCDate(date.getUTCDate() + days)
+  return ymd(date)
+}
+
+function currentMondayStr() {
+  return toDateInput(getStartOfWeek(new Date()))
+}
+
+function getWeekDayStrings(startStr: string) {
+  return Array.from({ length: 7 }, (_, index) => shiftDays(startStr, index))
+}
+
+function getPastWeekRange() {
+  const startDate = shiftDays(currentMondayStr(), -7)
+  return { startDate, endDate: shiftDays(startDate, 6) }
+}
+
+function formatWeekRangeLabel(startStr: string) {
+  const endStr = shiftDays(startStr, 6)
+  return `${formatDayMonthFromIsoString(startStr)} – ${formatDayMonthFromIsoString(endStr)}`
+}
+
+function formatWeekdayShort(value: string) {
+  const date = parseYmd(value)
+  const label = new Intl.DateTimeFormat('es-MX', { weekday: 'short', timeZone: 'UTC' }).format(date)
+  return label.charAt(0).toUpperCase() + label.slice(1, 3)
+}
+
+function formatPayType(payType: string) {
+  if (payType === 'DAILY') return 'Por día'
+  if (payType === 'HOURLY') return 'Por hora'
+  return 'Fijo'
+}
+
+function payrollStatusLabel(status: string) {
+  if (status === 'CLOSED') return 'Cerrado'
+  if (status === 'REVIEW') return 'En revisión'
+  return 'Borrador'
+}
+
+function payrollStatusChipClass(status: string) {
+  if (status === 'CLOSED') return 'ok'
+  if (status === 'REVIEW') return 'pending'
+  return 'pending'
+}
+
+// Convierte 'YYYY-MM-DD' + 'HH:MM' (hora local del usuario) a ISO para el backend.
+function localDateTimeToIso(dateStr: string, timeStr: string) {
+  if (!dateStr || !timeStr) return null
+  const iso = new Date(`${dateStr}T${timeStr}`)
+  if (Number.isNaN(iso.getTime())) return null
+  return iso.toISOString()
+}
+
+function isoToTimeInput(iso: string | null) {
+  if (!iso) return ''
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return ''
+  return new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false }).format(date)
+}
+
+type PayrollTab = 'EMPLEADOS' | 'ASISTENCIA' | 'PERIODOS'
+
+const emptyEmployeeForm = {
+  name: '',
+  position: '',
+  payType: 'DAILY' as 'DAILY' | 'HOURLY' | 'FIXED',
+  dailyRate: '',
+  biometricId: '',
+  locationId: 'ALL',
+}
+
 export function AppShellPage() {
   const { logout, memberships, loadingUser, refreshMe, user, token } = useAuth()
   const [selectedBusinessId, setSelectedBusinessId] = useState('')
@@ -758,6 +860,54 @@ export function AppShellPage() {
   const [showAddMemberForm, setShowAddMemberForm] = useState(false)
   const [savingMember, setSavingMember] = useState(false)
   const [addMemberError, setAddMemberError] = useState('')
+
+  // ----- Nómina -----
+  const [activePayrollTab, setActivePayrollTab] = useState<PayrollTab>('EMPLEADOS')
+  const [employees, setEmployees] = useState<Employee[]>([])
+  const [loadingEmployees, setLoadingEmployees] = useState(false)
+  const [employeesError, setEmployeesError] = useState('')
+  const [showEmployeeForm, setShowEmployeeForm] = useState(false)
+  const [editingEmployeeId, setEditingEmployeeId] = useState('')
+  const [employeeForm, setEmployeeForm] = useState({ ...emptyEmployeeForm })
+  const [savingEmployee, setSavingEmployee] = useState(false)
+  const [employeeFormError, setEmployeeFormError] = useState('')
+
+  const [attendanceWeekStart, setAttendanceWeekStart] = useState(currentMondayStr())
+  const [attendanceBuckets, setAttendanceBuckets] = useState<AttendanceEmployeeBucket[]>([])
+  const [loadingAttendance, setLoadingAttendance] = useState(false)
+  const [attendanceError, setAttendanceError] = useState('')
+  const [attendanceModal, setAttendanceModal] = useState<
+    | { employeeId: string; employeeName: string; day: string; recordId: string | null; clockIn: string; clockOut: string; notes: string }
+    | null
+  >(null)
+  const [savingAttendance, setSavingAttendance] = useState(false)
+  const [attendanceModalError, setAttendanceModalError] = useState('')
+
+  const [showImportModal, setShowImportModal] = useState(false)
+  const [importRows, setImportRows] = useState<Array<{ biometricId: string; timestamp: string }>>([])
+  const [importFileName, setImportFileName] = useState('')
+  const [importOffset, setImportOffset] = useState('0')
+  const [importError, setImportError] = useState('')
+  const [importingAttendance, setImportingAttendance] = useState(false)
+  const [importResult, setImportResult] = useState<{ creados: number; saltados: number; sinEmpleado: string[] } | null>(null)
+
+  const [payrollPeriods, setPayrollPeriods] = useState<PayrollPeriodItem[]>([])
+  const [loadingPeriods, setLoadingPeriods] = useState(false)
+  const [periodsError, setPeriodsError] = useState('')
+  const [showPeriodForm, setShowPeriodForm] = useState(false)
+  const [periodForm, setPeriodForm] = useState(getPastWeekRange())
+  const [savingPeriod, setSavingPeriod] = useState(false)
+  const [periodFormError, setPeriodFormError] = useState('')
+
+  const [selectedPeriodId, setSelectedPeriodId] = useState('')
+  const [periodDetail, setPeriodDetail] = useState<{ period: PayrollPeriodItem; rows: PayrollRow[] } | null>(null)
+  const [loadingPeriodDetail, setLoadingPeriodDetail] = useState(false)
+  const [periodDetailError, setPeriodDetailError] = useState('')
+  const [entryEdits, setEntryEdits] = useState<Record<string, { overtimePay: string; bonuses: string; tips: string; deductions: string }>>({})
+  const [savingEntryId, setSavingEntryId] = useState('')
+  const [periodActionError, setPeriodActionError] = useState('')
+  const [periodActionBusy, setPeriodActionBusy] = useState(false)
+  const [showCloseConfirm, setShowCloseConfirm] = useState(false)
   const [dashboardSummary, setDashboardSummary] = useState<DashboardSummary | null>(null)
   const [loadingDashboard, setLoadingDashboard] = useState(false)
   const [dashboardError, setDashboardError] = useState('')
@@ -997,6 +1147,13 @@ export function AppShellPage() {
   const canVoidClosing =
     selectedBusinessMembership?.role === 'OWNER' || selectedBusinessMembership?.role === 'ADMIN'
   const canManagePayables = Boolean(selectedBusinessMembership)
+  const canManageEmployees =
+    selectedBusinessMembership?.role === 'OWNER' ||
+    selectedBusinessMembership?.role === 'ADMIN' ||
+    selectedBusinessMembership?.role === 'MANAGER'
+  const canClosePayroll =
+    selectedBusinessMembership?.role === 'OWNER' || selectedBusinessMembership?.role === 'ADMIN'
+  const canReopenPayroll = selectedBusinessMembership?.role === 'OWNER'
   const canCreateEnvelope =
     selectedBusinessMembership?.role === 'OWNER' || selectedBusinessMembership?.role === 'ADMIN'
   const canDepositEnvelope = canReceiveRequisition
@@ -1492,6 +1649,77 @@ export function AppShellPage() {
       document.body.style.overflow = originalOverflow
     }
   }, [isMobileMenuOpen])
+
+  // ----- Nómina: carga por tab -----
+  useEffect(() => {
+    if (activeItem !== 'Nómina' || !token || !selectedBusinessId) return
+    if (activePayrollTab !== 'EMPLEADOS') return
+    setLoadingEmployees(true)
+    setEmployeesError('')
+    getEmployees({ token, businessId: selectedBusinessId, includeInactive: true })
+      .then((response) => setEmployees(response.items))
+      .catch((error) => {
+        setEmployees([])
+        setEmployeesError(error instanceof Error ? error.message : 'No se pudieron cargar los empleados')
+      })
+      .finally(() => setLoadingEmployees(false))
+  }, [activeItem, activePayrollTab, token, selectedBusinessId])
+
+  useEffect(() => {
+    if (activeItem !== 'Nómina' || !token || !selectedLocationId) return
+    if (activePayrollTab !== 'ASISTENCIA') return
+    setLoadingAttendance(true)
+    setAttendanceError('')
+    getLocationAttendance({ token, locationId: selectedLocationId, from: attendanceWeekStart, to: shiftDays(attendanceWeekStart, 6) })
+      .then((response) => setAttendanceBuckets(response.items))
+      .catch((error) => {
+        setAttendanceBuckets([])
+        setAttendanceError(error instanceof Error ? error.message : 'No se pudo cargar la asistencia')
+      })
+      .finally(() => setLoadingAttendance(false))
+  }, [activeItem, activePayrollTab, token, selectedLocationId, attendanceWeekStart])
+
+  useEffect(() => {
+    if (activeItem !== 'Nómina' || !token || !selectedBusinessId) return
+    if (activePayrollTab !== 'PERIODOS') return
+    setLoadingPeriods(true)
+    setPeriodsError('')
+    getPayrollPeriods({ token, businessId: selectedBusinessId })
+      .then((response) => setPayrollPeriods(response.items))
+      .catch((error) => {
+        setPayrollPeriods([])
+        setPeriodsError(error instanceof Error ? error.message : 'No se pudieron cargar los periodos')
+      })
+      .finally(() => setLoadingPeriods(false))
+  }, [activeItem, activePayrollTab, token, selectedBusinessId])
+
+  useEffect(() => {
+    if (!selectedPeriodId || !token) {
+      setPeriodDetail(null)
+      return
+    }
+    setLoadingPeriodDetail(true)
+    setPeriodDetailError('')
+    getPayrollPeriod({ token, periodId: selectedPeriodId })
+      .then((response) => {
+        setPeriodDetail(response)
+        const edits: Record<string, { overtimePay: string; bonuses: string; tips: string; deductions: string }> = {}
+        response.rows.forEach((row) => {
+          edits[row.employeeId] = {
+            overtimePay: String(row.overtimePay || ''),
+            bonuses: String(row.bonuses || ''),
+            tips: String(row.tips || ''),
+            deductions: String(row.deductions || ''),
+          }
+        })
+        setEntryEdits(edits)
+      })
+      .catch((error) => {
+        setPeriodDetail(null)
+        setPeriodDetailError(error instanceof Error ? error.message : 'No se pudo cargar el periodo')
+      })
+      .finally(() => setLoadingPeriodDetail(false))
+  }, [selectedPeriodId, token])
 
   useEffect(() => {
     if (!useCashBreakdownMode) return
@@ -6296,6 +6524,723 @@ export function AppShellPage() {
       ) : null}
     </section>
   )
+  // ----- Nómina: handlers -----
+  const round2 = (value: number) => Math.round(value * 100) / 100
+  const businessLocationName = (locationId: string | null) => {
+    if (!locationId) return 'Todas'
+    return (selectedBusiness?.locations || []).find((location) => location.id === locationId)?.name || '—'
+  }
+
+  async function refreshEmployees() {
+    if (!token || !selectedBusinessId) return
+    const response = await getEmployees({ token, businessId: selectedBusinessId, includeInactive: true })
+    setEmployees(response.items)
+  }
+  function openNewEmployee() {
+    setEditingEmployeeId('')
+    setEmployeeForm({ ...emptyEmployeeForm })
+    setEmployeeFormError('')
+    setShowEmployeeForm(true)
+  }
+  function openEditEmployee(emp: Employee) {
+    setEditingEmployeeId(emp.id)
+    setEmployeeForm({
+      name: emp.name,
+      position: emp.position,
+      payType: emp.payType,
+      dailyRate: emp.dailyRate != null ? String(emp.dailyRate) : '',
+      biometricId: emp.biometricId || '',
+      locationId: emp.locationId || 'ALL',
+    })
+    setEmployeeFormError('')
+    setShowEmployeeForm(true)
+  }
+  async function handleSubmitEmployee(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!token || !selectedBusinessId) return
+    setSavingEmployee(true)
+    setEmployeeFormError('')
+    try {
+      const rate = employeeForm.dailyRate ? Number(employeeForm.dailyRate) : null
+      const bio = employeeForm.biometricId.trim() || null
+      const locationId = employeeForm.locationId === 'ALL' ? null : employeeForm.locationId
+      if (editingEmployeeId) {
+        await patchEmployee({
+          token,
+          businessId: selectedBusinessId,
+          employeeId: editingEmployeeId,
+          payload: { name: employeeForm.name.trim(), position: employeeForm.position.trim(), payType: employeeForm.payType, dailyRate: rate, biometricId: bio, locationId },
+        })
+      } else {
+        await createEmployee({
+          token,
+          businessId: selectedBusinessId,
+          payload: { name: employeeForm.name.trim(), position: employeeForm.position.trim(), payType: employeeForm.payType, dailyRate: rate ?? undefined, biometricId: bio ?? undefined, locationId },
+        })
+      }
+      setShowEmployeeForm(false)
+      await refreshEmployees()
+    } catch (error) {
+      setEmployeeFormError(error instanceof Error ? error.message : 'No se pudo guardar el empleado')
+    } finally {
+      setSavingEmployee(false)
+    }
+  }
+  async function handleToggleEmployeeActive(emp: Employee) {
+    if (!token || !selectedBusinessId) return
+    setEmployeesError('')
+    try {
+      if (emp.active) {
+        await deleteEmployee({ token, businessId: selectedBusinessId, employeeId: emp.id })
+      } else {
+        await patchEmployee({ token, businessId: selectedBusinessId, employeeId: emp.id, payload: { active: true } })
+      }
+      await refreshEmployees()
+    } catch (error) {
+      setEmployeesError(error instanceof Error ? error.message : 'No se pudo actualizar el empleado')
+    }
+  }
+
+  async function refreshAttendance() {
+    if (!token || !selectedLocationId) return
+    const response = await getLocationAttendance({ token, locationId: selectedLocationId, from: attendanceWeekStart, to: shiftDays(attendanceWeekStart, 6) })
+    setAttendanceBuckets(response.items)
+  }
+  function openAttendanceCell(bucket: AttendanceEmployeeBucket, day: string) {
+    const records = bucket.days[day] || []
+    const record = records[0] || null
+    setAttendanceModal({
+      employeeId: bucket.employee.id,
+      employeeName: bucket.employee.name,
+      day,
+      recordId: record ? record.id : null,
+      clockIn: record ? isoToTimeInput(record.clockIn) : '',
+      clockOut: record ? isoToTimeInput(record.clockOut) : '',
+      notes: record ? record.notes || '' : '',
+    })
+    setAttendanceModalError('')
+  }
+  async function handleSaveAttendance() {
+    if (!attendanceModal || !token) return
+    const { day, clockIn, clockOut, recordId, employeeId, notes } = attendanceModal
+    const clockInIso = localDateTimeToIso(day, clockIn)
+    if (!clockInIso) {
+      setAttendanceModalError('La hora de entrada es obligatoria')
+      return
+    }
+    const clockOutIso = clockOut ? localDateTimeToIso(day, clockOut) : null
+    setSavingAttendance(true)
+    setAttendanceModalError('')
+    try {
+      if (recordId) {
+        await patchAttendance({ token, attendanceId: recordId, payload: { clockIn: clockInIso, clockOut: clockOutIso, notes: notes.trim() || null } })
+      } else {
+        await createAttendance({ token, employeeId, payload: { clockIn: clockInIso, clockOut: clockOutIso || undefined, notes: notes.trim() || undefined } })
+      }
+      setAttendanceModal(null)
+      await refreshAttendance()
+    } catch (error) {
+      setAttendanceModalError(error instanceof Error ? error.message : 'No se pudo guardar la asistencia')
+    } finally {
+      setSavingAttendance(false)
+    }
+  }
+  async function handleDeleteAttendanceRecord() {
+    if (!attendanceModal?.recordId || !token) return
+    setSavingAttendance(true)
+    try {
+      await deleteAttendance({ token, attendanceId: attendanceModal.recordId })
+      setAttendanceModal(null)
+      await refreshAttendance()
+    } catch (error) {
+      setAttendanceModalError(error instanceof Error ? error.message : 'No se pudo eliminar')
+    } finally {
+      setSavingAttendance(false)
+    }
+  }
+
+  function handleCsvFile(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0]
+    if (!file) return
+    setImportError('')
+    setImportResult(null)
+    const reader = new FileReader()
+    reader.onload = () => {
+      try {
+        const text = String(reader.result || '')
+        const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+        if (!lines.length) throw new Error('El archivo está vacío')
+        const delimiter = lines[0].includes(';') && !lines[0].includes(',') ? ';' : ','
+        const cells = lines.map((line) => line.split(delimiter).map((c) => c.trim().replace(/^"|"$/g, '')))
+        const header = cells[0].map((c) => c.toLowerCase())
+        let idIdx = header.findIndex((h) => /id|biomet|emplead|user|clave/.test(h))
+        let tsIdx = header.findIndex((h) => /time|fecha|hora|stamp|date|check/.test(h))
+        let dataRows = cells.slice(1)
+        if (idIdx === -1 || tsIdx === -1) {
+          idIdx = 0
+          tsIdx = 1
+          dataRows = cells
+        }
+        const rows = dataRows
+          .map((row) => ({ biometricId: row[idIdx], timestamp: row[tsIdx] }))
+          .filter((row) => row.biometricId && row.timestamp)
+        if (!rows.length) throw new Error('No se detectaron filas con ID y timestamp')
+        setImportRows(rows)
+        setImportFileName(file.name)
+      } catch (error) {
+        setImportRows([])
+        setImportFileName('')
+        setImportError(error instanceof Error ? error.message : 'No se pudo leer el CSV')
+      }
+    }
+    reader.onerror = () => setImportError('No se pudo leer el archivo')
+    reader.readAsText(file)
+    event.target.value = ''
+  }
+  async function handleRunImport() {
+    if (!token || !selectedLocationId || !importRows.length) return
+    setImportingAttendance(true)
+    setImportError('')
+    try {
+      const result = await importAttendance({ token, locationId: selectedLocationId, payload: { offsetHours: Number(importOffset) || 0, rows: importRows } })
+      setImportResult(result)
+      await refreshAttendance()
+    } catch (error) {
+      setImportError(error instanceof Error ? error.message : 'No se pudo importar')
+    } finally {
+      setImportingAttendance(false)
+    }
+  }
+  function closeImportModal() {
+    setShowImportModal(false)
+    setImportRows([])
+    setImportFileName('')
+    setImportResult(null)
+    setImportError('')
+    setImportOffset('0')
+  }
+
+  async function refreshPeriods() {
+    if (!token || !selectedBusinessId) return
+    const response = await getPayrollPeriods({ token, businessId: selectedBusinessId })
+    setPayrollPeriods(response.items)
+  }
+  async function refreshPeriodDetail() {
+    if (!token || !selectedPeriodId) return
+    const response = await getPayrollPeriod({ token, periodId: selectedPeriodId })
+    setPeriodDetail(response)
+    const edits: Record<string, { overtimePay: string; bonuses: string; tips: string; deductions: string }> = {}
+    response.rows.forEach((row) => {
+      edits[row.employeeId] = {
+        overtimePay: String(row.overtimePay || ''),
+        bonuses: String(row.bonuses || ''),
+        tips: String(row.tips || ''),
+        deductions: String(row.deductions || ''),
+      }
+    })
+    setEntryEdits(edits)
+  }
+  async function handleCreatePeriod(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!token || !selectedBusinessId) return
+    setSavingPeriod(true)
+    setPeriodFormError('')
+    try {
+      const response = await createPayrollPeriod({ token, businessId: selectedBusinessId, payload: periodForm })
+      setShowPeriodForm(false)
+      await refreshPeriods()
+      setSelectedPeriodId(response.period.id)
+    } catch (error) {
+      setPeriodFormError(error instanceof Error ? error.message : 'No se pudo crear el periodo')
+    } finally {
+      setSavingPeriod(false)
+    }
+  }
+  function handleEntryEditChange(employeeId: string, field: 'overtimePay' | 'bonuses' | 'tips' | 'deductions', value: string) {
+    setEntryEdits((prev) => {
+      const current = prev[employeeId] || { overtimePay: '', bonuses: '', tips: '', deductions: '' }
+      return { ...prev, [employeeId]: { ...current, [field]: value } }
+    })
+  }
+  async function handleSaveEntry(employeeId: string) {
+    if (!token || !selectedPeriodId) return
+    const edit = entryEdits[employeeId] || { overtimePay: '', bonuses: '', tips: '', deductions: '' }
+    setSavingEntryId(employeeId)
+    setPeriodActionError('')
+    try {
+      await putPayrollEntry({
+        token,
+        periodId: selectedPeriodId,
+        employeeId,
+        payload: {
+          overtimePay: Number(edit.overtimePay) || 0,
+          bonuses: Number(edit.bonuses) || 0,
+          tips: Number(edit.tips) || 0,
+          deductions: Number(edit.deductions) || 0,
+        },
+      })
+      await refreshPeriodDetail()
+    } catch (error) {
+      setPeriodActionError(error instanceof Error ? error.message : 'No se pudo guardar la fila')
+    } finally {
+      setSavingEntryId('')
+    }
+  }
+  async function handleClosePeriod() {
+    if (!token || !selectedPeriodId) return
+    setPeriodActionBusy(true)
+    setPeriodActionError('')
+    try {
+      await closePayrollPeriod({ token, periodId: selectedPeriodId })
+      setShowCloseConfirm(false)
+      await refreshPeriodDetail()
+      await refreshPeriods()
+    } catch (error) {
+      setPeriodActionError(error instanceof Error ? error.message : 'No se pudo cerrar el periodo')
+    } finally {
+      setPeriodActionBusy(false)
+    }
+  }
+  async function handleReopenPeriod() {
+    if (!token || !selectedPeriodId) return
+    setPeriodActionBusy(true)
+    setPeriodActionError('')
+    try {
+      await reopenPayrollPeriod({ token, periodId: selectedPeriodId })
+      await refreshPeriodDetail()
+      await refreshPeriods()
+    } catch (error) {
+      setPeriodActionError(error instanceof Error ? error.message : 'No se pudo reabrir el periodo')
+    } finally {
+      setPeriodActionBusy(false)
+    }
+  }
+
+  const renderPayrollEmpleados = () => (
+    <>
+      <div className="q-actions-row">
+        <p className="q-table-muted">{employees.filter((e) => e.active).length} activos</p>
+        {canManageEmployees ? (
+          <button className="q-btn q-btn-inline" type="button" onClick={openNewEmployee}>
+            Agregar empleado
+          </button>
+        ) : null}
+      </div>
+      {showEmployeeForm ? (
+        <form className="q-card q-team-form" onSubmit={handleSubmitEmployee}>
+          <div className="q-field-grid-2">
+            <label className="q-field">
+              Nombre
+              <input type="text" required value={employeeForm.name} onChange={(e) => setEmployeeForm((prev) => ({ ...prev, name: e.target.value }))} />
+            </label>
+            <label className="q-field">
+              Puesto
+              <input type="text" required value={employeeForm.position} onChange={(e) => setEmployeeForm((prev) => ({ ...prev, position: e.target.value }))} />
+            </label>
+          </div>
+          <div className="q-field-grid-3">
+            <label className="q-field">
+              Tipo de pago
+              <select value={employeeForm.payType} onChange={(e) => setEmployeeForm((prev) => ({ ...prev, payType: e.target.value as 'DAILY' | 'HOURLY' | 'FIXED' }))}>
+                <option value="DAILY">Por día</option>
+                <option value="HOURLY">Por hora</option>
+                <option value="FIXED">Fijo</option>
+              </select>
+            </label>
+            <label className="q-field">
+              $ por día
+              <input type="number" min="0" step="0.01" value={employeeForm.dailyRate} onChange={(e) => setEmployeeForm((prev) => ({ ...prev, dailyRate: e.target.value }))} />
+            </label>
+            <label className="q-field">
+              ID checador
+              <input type="text" value={employeeForm.biometricId} onChange={(e) => setEmployeeForm((prev) => ({ ...prev, biometricId: e.target.value }))} />
+            </label>
+          </div>
+          <label className="q-field">
+            Sucursal
+            <select value={employeeForm.locationId} onChange={(e) => setEmployeeForm((prev) => ({ ...prev, locationId: e.target.value }))}>
+              <option value="ALL">Todas las sucursales</option>
+              {(selectedBusiness?.locations || []).map((location) => (
+                <option key={location.id} value={location.id}>{location.name}</option>
+              ))}
+            </select>
+          </label>
+          {employeeFormError ? <p className="q-error-text">{employeeFormError}</p> : null}
+          <div className="q-table-actions">
+            <button className="q-btn q-btn-inline" type="submit" disabled={savingEmployee}>
+              {savingEmployee ? 'Guardando...' : editingEmployeeId ? 'Guardar cambios' : 'Guardar empleado'}
+            </button>
+            <button type="button" className="q-link-btn" onClick={() => setShowEmployeeForm(false)}>Cancelar</button>
+          </div>
+        </form>
+      ) : null}
+      {loadingEmployees ? <p>Cargando empleados...</p> : null}
+      {employeesError ? <p className="q-error-text">{employeesError}</p> : null}
+      {!loadingEmployees && !employeesError && !employees.length ? (
+        <section className="q-card q-empty-state">
+          <h3>Aún no hay empleados</h3>
+          <p>Agrega al primer empleado para llevar su asistencia y nómina.</p>
+        </section>
+      ) : null}
+      {!loadingEmployees && !employeesError && employees.length ? (
+        <div className="q-table-wrap">
+          <table className="q-table">
+            <thead>
+              <tr>
+                <th>Nombre</th>
+                <th>Puesto</th>
+                <th className="is-right">$/día</th>
+                <th>ID checador</th>
+                <th>Sucursal</th>
+                <th>Estado</th>
+                {canManageEmployees ? <th>Acciones</th> : null}
+              </tr>
+            </thead>
+            <tbody>
+              {employees.map((emp) => (
+                <tr key={emp.id} className={emp.active ? '' : 'q-row-inactive'}>
+                  <td>{emp.name}</td>
+                  <td>{emp.position} · <span className="q-table-muted">{formatPayType(emp.payType)}</span></td>
+                  <td className="is-right q-mono">{emp.dailyRate != null ? formatMoney(emp.dailyRate) : '—'}</td>
+                  <td className="q-mono">{emp.biometricId || '—'}</td>
+                  <td>{businessLocationName(emp.locationId)}</td>
+                  <td>{emp.active ? <span className="q-chip ok">Activo</span> : <span className="q-chip voided">Inactivo</span>}</td>
+                  {canManageEmployees ? (
+                    <td>
+                      <div className="q-table-actions">
+                        <button type="button" className="q-link-btn" onClick={() => openEditEmployee(emp)}>Editar</button>
+                        <button type="button" className={`q-link-btn ${emp.active ? 'q-link-danger' : ''}`} onClick={() => handleToggleEmployeeActive(emp)}>
+                          {emp.active ? 'Desactivar' : 'Reactivar'}
+                        </button>
+                      </div>
+                    </td>
+                  ) : null}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+    </>
+  )
+
+  const renderPayrollAsistencia = () => (
+    <>
+      <div className="q-actions-row">
+        <div className="q-month-nav">
+          <button type="button" className="q-chip-btn" onClick={() => setAttendanceWeekStart((prev) => shiftDays(prev, -7))}>←</button>
+          <strong>{formatWeekRangeLabel(attendanceWeekStart)}</strong>
+          <button type="button" className="q-chip-btn" onClick={() => setAttendanceWeekStart((prev) => shiftDays(prev, 7))}>→</button>
+          <button type="button" className="q-chip-btn" onClick={() => setAttendanceWeekStart(currentMondayStr())}>Hoy</button>
+        </div>
+        {canManageEmployees ? (
+          <button className="q-btn q-btn-inline" type="button" onClick={() => setShowImportModal(true)}>Importar checador</button>
+        ) : null}
+      </div>
+      {loadingAttendance ? <p>Cargando asistencia...</p> : null}
+      {attendanceError ? <p className="q-error-text">{attendanceError}</p> : null}
+      {!loadingAttendance && !attendanceError && !attendanceBuckets.length ? (
+        <section className="q-card q-empty-state">
+          <h3>Sin empleados en esta sucursal</h3>
+          <p>Agrega empleados para registrar su asistencia.</p>
+        </section>
+      ) : null}
+      {!loadingAttendance && !attendanceError && attendanceBuckets.length ? (
+        <div className="q-table-wrap q-attendance-wrap">
+          <table className="q-table q-attendance-grid">
+            <thead>
+              <tr>
+                <th>Empleado</th>
+                {getWeekDayStrings(attendanceWeekStart).map((day) => (
+                  <th key={day} className="is-center">{formatWeekdayShort(day)}<br /><span className="q-table-muted">{formatDayMonthFromIsoString(day)}</span></th>
+                ))}
+                <th className="is-right">Días</th>
+                <th className="is-right">Horas</th>
+              </tr>
+            </thead>
+            <tbody>
+              {attendanceBuckets.map((bucket) => (
+                <tr key={bucket.employee.id}>
+                  <td>{bucket.employee.name}</td>
+                  {getWeekDayStrings(attendanceWeekStart).map((day) => {
+                    const records = bucket.days[day] || []
+                    const hours = records.reduce((s, r) => s + r.hours, 0)
+                    return (
+                      <td key={day} className="is-center q-attendance-cell" onClick={canManageEmployees ? () => openAttendanceCell(bucket, day) : undefined}>
+                        {records.length ? (
+                          <span className="q-attendance-mark">✓{hours ? <span className="q-mono q-attendance-hours">{hours}h</span> : null}{records.length > 1 ? <span className="q-attendance-multi">×{records.length}</span> : null}</span>
+                        ) : (
+                          <span className="q-attendance-empty">—</span>
+                        )}
+                      </td>
+                    )
+                  })}
+                  <td className="is-right q-mono">{bucket.totals.days}</td>
+                  <td className="is-right q-mono">{bucket.totals.hours}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+    </>
+  )
+
+  const renderPayrollPeriodDetail = () => {
+    if (!periodDetail) {
+      return (
+        <section className="q-card q-payroll-detail">
+          <button type="button" className="q-link-btn" onClick={() => setSelectedPeriodId('')}>← Periodos</button>
+          {loadingPeriodDetail ? <p>Cargando...</p> : null}
+          {periodDetailError ? <p className="q-error-text">{periodDetailError}</p> : null}
+        </section>
+      )
+    }
+    const period = periodDetail.period
+    const isClosed = period.status === 'CLOSED'
+    const rows = periodDetail.rows.map((row) => {
+      const edit = entryEdits[row.employeeId]
+      const overtimePay = isClosed || !edit ? row.overtimePay : Number(edit.overtimePay) || 0
+      const bonuses = isClosed || !edit ? row.bonuses : Number(edit.bonuses) || 0
+      const tips = isClosed || !edit ? row.tips : Number(edit.tips) || 0
+      const deductions = isClosed || !edit ? row.deductions : Number(edit.deductions) || 0
+      const total = round2(row.basePay + overtimePay + bonuses + tips - deductions)
+      return { ...row, overtimePay, bonuses, tips, deductions, total }
+    })
+    const previewTotal = round2(rows.reduce((sum, row) => sum + row.total, 0))
+    return (
+      <section className="q-card q-payroll-detail">
+        <header className="q-section-header">
+          <div>
+            <button type="button" className="q-link-btn" onClick={() => setSelectedPeriodId('')}>← Periodos</button>
+            <h2>{formatDateFromIsoString(period.startDate)} – {formatDateFromIsoString(period.endDate)}</h2>
+            <p><span className={`q-chip ${payrollStatusChipClass(period.status)}`}>{payrollStatusLabel(period.status)}</span></p>
+          </div>
+        </header>
+        {periodActionError ? <p className="q-error-text">{periodActionError}</p> : null}
+        {loadingPeriodDetail ? <p>Cargando...</p> : null}
+        <div className="q-table-wrap">
+          <table className="q-table q-payroll-table">
+            <thead>
+              <tr>
+                <th>Empleado</th>
+                <th className="is-right">Días</th>
+                <th className="is-right">Horas</th>
+                <th className="is-right">Base</th>
+                <th className="is-right">Extras</th>
+                <th className="is-right">Bonos</th>
+                <th className="is-right">Propinas</th>
+                <th className="is-right">Deducc.</th>
+                <th className="is-right">Total</th>
+                {!isClosed && canManageEmployees ? <th></th> : null}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row) => {
+                const edit = entryEdits[row.employeeId] || { overtimePay: '', bonuses: '', tips: '', deductions: '' }
+                return (
+                  <tr key={row.employeeId}>
+                    <td>{row.employee.name}</td>
+                    <td className="is-right q-mono">{row.daysWorked}</td>
+                    <td className="is-right q-mono">{row.regularHours}</td>
+                    <td className="is-right q-mono">{formatMoney(row.basePay)}</td>
+                    {isClosed || !canManageEmployees ? (
+                      <>
+                        <td className="is-right q-mono">{formatMoney(row.overtimePay)}</td>
+                        <td className="is-right q-mono">{formatMoney(row.bonuses)}</td>
+                        <td className="is-right q-mono">{formatMoney(row.tips)}</td>
+                        <td className="is-right q-mono">{formatMoney(row.deductions)}</td>
+                      </>
+                    ) : (
+                      <>
+                        <td className="is-right"><input className="q-payroll-input q-mono" type="number" min="0" step="0.01" value={edit.overtimePay} onChange={(e) => handleEntryEditChange(row.employeeId, 'overtimePay', e.target.value)} /></td>
+                        <td className="is-right"><input className="q-payroll-input q-mono" type="number" min="0" step="0.01" value={edit.bonuses} onChange={(e) => handleEntryEditChange(row.employeeId, 'bonuses', e.target.value)} /></td>
+                        <td className="is-right"><input className="q-payroll-input q-mono" type="number" min="0" step="0.01" value={edit.tips} onChange={(e) => handleEntryEditChange(row.employeeId, 'tips', e.target.value)} /></td>
+                        <td className="is-right"><input className="q-payroll-input q-mono" type="number" min="0" step="0.01" value={edit.deductions} onChange={(e) => handleEntryEditChange(row.employeeId, 'deductions', e.target.value)} /></td>
+                      </>
+                    )}
+                    <td className="is-right q-mono"><strong>{formatMoney(row.total)}</strong></td>
+                    {!isClosed && canManageEmployees ? (
+                      <td><button type="button" className="q-link-btn" disabled={savingEntryId === row.employeeId} onClick={() => handleSaveEntry(row.employeeId)}>{savingEntryId === row.employeeId ? '...' : 'Guardar'}</button></td>
+                    ) : null}
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+        <div className="q-payroll-total">
+          <span>Total del periodo</span>
+          <strong className="q-mono">{formatMoney(isClosed ? period.total || previewTotal : previewTotal)}</strong>
+        </div>
+        <div className="q-table-actions">
+          {!isClosed && canClosePayroll ? (
+            <button type="button" className="q-btn q-btn-inline" onClick={() => setShowCloseConfirm(true)}>Cerrar periodo</button>
+          ) : null}
+          {isClosed && canReopenPayroll ? (
+            <button type="button" className="q-link-btn q-link-danger" disabled={periodActionBusy} onClick={handleReopenPeriod}>{periodActionBusy ? 'Reabriendo...' : 'Reabrir periodo'}</button>
+          ) : null}
+        </div>
+      </section>
+    )
+  }
+
+  const renderPayrollPeriodos = () => {
+    if (selectedPeriodId) return renderPayrollPeriodDetail()
+    return (
+      <>
+        <div className="q-actions-row">
+          <p className="q-table-muted">{payrollPeriods.length} periodos</p>
+          {canClosePayroll ? (
+            <button className="q-btn q-btn-inline" type="button" onClick={() => { setPeriodForm(getPastWeekRange()); setPeriodFormError(''); setShowPeriodForm((prev) => !prev) }}>Nuevo periodo</button>
+          ) : null}
+        </div>
+        {showPeriodForm ? (
+          <form className="q-card q-team-form" onSubmit={handleCreatePeriod}>
+            <div className="q-field-grid-2">
+              <label className="q-field">
+                Del
+                <input type="date" required value={periodForm.startDate} onChange={(e) => setPeriodForm((prev) => ({ ...prev, startDate: e.target.value }))} />
+              </label>
+              <label className="q-field">
+                Al
+                <input type="date" required value={periodForm.endDate} onChange={(e) => setPeriodForm((prev) => ({ ...prev, endDate: e.target.value }))} />
+              </label>
+            </div>
+            {periodFormError ? <p className="q-error-text">{periodFormError}</p> : null}
+            <div className="q-table-actions">
+              <button className="q-btn q-btn-inline" type="submit" disabled={savingPeriod}>{savingPeriod ? 'Creando...' : 'Crear periodo'}</button>
+              <button type="button" className="q-link-btn" onClick={() => setShowPeriodForm(false)}>Cancelar</button>
+            </div>
+          </form>
+        ) : null}
+        {loadingPeriods ? <p>Cargando periodos...</p> : null}
+        {periodsError ? <p className="q-error-text">{periodsError}</p> : null}
+        {!loadingPeriods && !periodsError && !payrollPeriods.length ? (
+          <section className="q-card q-empty-state">
+            <h3>Aún no hay periodos</h3>
+            <p>Crea un periodo semanal para calcular la nómina.</p>
+          </section>
+        ) : null}
+        {!loadingPeriods && !periodsError && payrollPeriods.length ? (
+          <div className="q-table-wrap">
+            <table className="q-table">
+              <thead>
+                <tr><th>Periodo</th><th>Estado</th><th className="is-right">Total</th><th></th></tr>
+              </thead>
+              <tbody>
+                {payrollPeriods.map((period) => (
+                  <tr key={period.id}>
+                    <td>{formatDateFromIsoString(period.startDate)} – {formatDateFromIsoString(period.endDate)}</td>
+                    <td><span className={`q-chip ${payrollStatusChipClass(period.status)}`}>{payrollStatusLabel(period.status)}</span></td>
+                    <td className="is-right q-mono">{period.total != null ? formatMoney(period.total) : '—'}</td>
+                    <td><button type="button" className="q-link-btn" onClick={() => setSelectedPeriodId(period.id)}>Ver</button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : null}
+      </>
+    )
+  }
+
+  const renderPayroll = () => (
+    <section className="q-shift-closings">
+      <header className="q-section-header">
+        <div>
+          <h1>Nómina</h1>
+          <p>Empleados, asistencia y periodos de pago</p>
+        </div>
+      </header>
+      <div className="q-filter-row">
+        <button type="button" className={`q-chip-btn ${activePayrollTab === 'EMPLEADOS' ? 'active' : ''}`} onClick={() => setActivePayrollTab('EMPLEADOS')}>Empleados</button>
+        <button type="button" className={`q-chip-btn ${activePayrollTab === 'ASISTENCIA' ? 'active' : ''}`} onClick={() => setActivePayrollTab('ASISTENCIA')}>Asistencia</button>
+        <button type="button" className={`q-chip-btn ${activePayrollTab === 'PERIODOS' ? 'active' : ''}`} onClick={() => setActivePayrollTab('PERIODOS')}>Periodos</button>
+      </div>
+      {activePayrollTab === 'EMPLEADOS' ? renderPayrollEmpleados() : null}
+      {activePayrollTab === 'ASISTENCIA' ? renderPayrollAsistencia() : null}
+      {activePayrollTab === 'PERIODOS' ? renderPayrollPeriodos() : null}
+
+      {attendanceModal ? (
+        <div className="q-modal-overlay" role="presentation" onClick={() => setAttendanceModal(null)}>
+          <section className="q-modal-card" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()} style={{ width: 'min(460px, 100%)' }}>
+            <header className="q-close-form-header">
+              <h2>{attendanceModal.employeeName}</h2>
+              <button type="button" className="q-link-btn" onClick={() => setAttendanceModal(null)}>Cerrar</button>
+            </header>
+            <p className="q-table-muted">{formatDateFromIsoString(attendanceModal.day)}</p>
+            <div className="q-field-grid-2">
+              <label className="q-field">Entrada<input type="time" value={attendanceModal.clockIn} onChange={(e) => setAttendanceModal((prev) => (prev ? { ...prev, clockIn: e.target.value } : prev))} /></label>
+              <label className="q-field">Salida<input type="time" value={attendanceModal.clockOut} onChange={(e) => setAttendanceModal((prev) => (prev ? { ...prev, clockOut: e.target.value } : prev))} /></label>
+            </div>
+            <label className="q-field">Nota<input type="text" value={attendanceModal.notes} onChange={(e) => setAttendanceModal((prev) => (prev ? { ...prev, notes: e.target.value } : prev))} /></label>
+            {attendanceModalError ? <p className="q-error-text">{attendanceModalError}</p> : null}
+            <div className="q-table-actions">
+              <button type="button" className="q-btn q-btn-inline" disabled={savingAttendance} onClick={handleSaveAttendance}>{savingAttendance ? 'Guardando...' : 'Guardar'}</button>
+              {attendanceModal.recordId ? <button type="button" className="q-link-btn q-link-danger" disabled={savingAttendance} onClick={handleDeleteAttendanceRecord}>Eliminar</button> : null}
+            </div>
+          </section>
+        </div>
+      ) : null}
+
+      {showImportModal ? (
+        <div className="q-modal-overlay" role="presentation" onClick={closeImportModal}>
+          <section className="q-modal-card" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()} style={{ width: 'min(560px, 100%)' }}>
+            <header className="q-close-form-header">
+              <h2>Importar checador</h2>
+              <button type="button" className="q-link-btn" onClick={closeImportModal}>Cerrar</button>
+            </header>
+            <p className="q-table-muted">Sube el CSV del checador (columnas de ID y timestamp). Empareja entradas/salidas por día.</p>
+            <label className="q-field">Archivo CSV<input type="file" accept=".csv,text/csv" onChange={handleCsvFile} /></label>
+            <label className="q-field">Offset de horas del reloj<input type="number" step="1" value={importOffset} onChange={(e) => setImportOffset(e.target.value)} /></label>
+            {importFileName ? <p className="q-table-muted">{importFileName} · {importRows.length} filas detectadas</p> : null}
+            {importRows.length ? (
+              <div className="q-table-wrap">
+                <table className="q-table">
+                  <thead><tr><th>ID checador</th><th>Timestamp</th></tr></thead>
+                  <tbody>
+                    {importRows.slice(0, 5).map((row, index) => (
+                      <tr key={`${row.biometricId}-${index}`}><td className="q-mono">{row.biometricId}</td><td className="q-mono">{row.timestamp}</td></tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : null}
+            {importError ? <p className="q-error-text">{importError}</p> : null}
+            {importResult ? (
+              <p className="q-success-text">
+                Importado: {importResult.creados} creados, {importResult.saltados} saltados
+                {importResult.sinEmpleado.length ? ` · sin empleado: ${importResult.sinEmpleado.join(', ')}` : ''}
+              </p>
+            ) : null}
+            <div className="q-table-actions">
+              <button type="button" className="q-btn q-btn-inline" disabled={!importRows.length || importingAttendance} onClick={handleRunImport}>{importingAttendance ? 'Importando...' : 'Importar'}</button>
+              <button type="button" className="q-link-btn" onClick={closeImportModal}>Listo</button>
+            </div>
+          </section>
+        </div>
+      ) : null}
+
+      {showCloseConfirm && periodDetail ? (
+        <div className="q-modal-overlay" role="presentation" onClick={() => setShowCloseConfirm(false)}>
+          <section className="q-modal-card" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()} style={{ width: 'min(460px, 100%)' }}>
+            <header className="q-close-form-header">
+              <h2>Cerrar periodo</h2>
+              <button type="button" className="q-link-btn" onClick={() => setShowCloseConfirm(false)}>Cerrar</button>
+            </header>
+            <p>Se registrará un gasto de <strong>Sueldos</strong> por <strong className="q-mono">{formatMoney(periodDetail.rows.reduce((sum, row) => { const edit = entryEdits[row.employeeId]; const ot = edit ? Number(edit.overtimePay) || 0 : row.overtimePay; const bo = edit ? Number(edit.bonuses) || 0 : row.bonuses; const ti = edit ? Number(edit.tips) || 0 : row.tips; const de = edit ? Number(edit.deductions) || 0 : row.deductions; return sum + row.basePay + ot + bo + ti - de }, 0))}</strong>. El periodo quedará en solo lectura.</p>
+            {periodActionError ? <p className="q-error-text">{periodActionError}</p> : null}
+            <div className="q-table-actions">
+              <button type="button" className="q-btn q-btn-inline" disabled={periodActionBusy} onClick={handleClosePeriod}>{periodActionBusy ? 'Cerrando...' : 'Confirmar cierre'}</button>
+              <button type="button" className="q-link-btn" onClick={() => setShowCloseConfirm(false)}>Cancelar</button>
+            </div>
+          </section>
+        </div>
+      ) : null}
+    </section>
+  )
+
   const renderTeam = () => (
     <section className="q-shift-closings">
       <header className="q-section-header">
@@ -6618,6 +7563,7 @@ export function AppShellPage() {
           {!loadingUser && activeItem === 'Gastos' ? renderExpenses() : null}
           {!loadingUser && activeItem === 'Sobres' ? renderEnvelopes() : null}
           {!loadingUser && activeItem === 'P&L y reportes' ? renderPnl() : null}
+          {!loadingUser && activeItem === 'Nómina' ? renderPayroll() : null}
           {!loadingUser && activeItem === 'Equipo' ? renderTeam() : null}
           {!loadingUser && activeItem === 'Waitlist' ? renderWaitlist() : null}
 
@@ -6627,6 +7573,7 @@ export function AppShellPage() {
           activeItem !== 'Requisiciones' &&
           activeItem !== 'Proveedores y adeudos' &&
           activeItem !== 'Tarjetas' &&
+          activeItem !== 'Nómina' &&
           activeItem !== 'Gastos' &&
           activeItem !== 'Sobres' &&
           activeItem !== 'P&L y reportes' &&

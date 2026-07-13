@@ -1287,3 +1287,144 @@ export async function createShiftClosing({
     body: payload,
   })
 }
+
+// ============================================================
+// NÓMINA — empleados, asistencia, periodos
+// ============================================================
+
+export type Employee = {
+  id: string
+  businessId: string
+  locationId: string | null
+  name: string
+  position: string
+  payType: 'DAILY' | 'HOURLY' | 'FIXED'
+  dailyRate: number | null
+  hourlyRate: number | null
+  biometricId: string | null
+  active: boolean
+  hiredAt: string | null
+}
+
+export type AttendanceRecordItem = {
+  id: string
+  clockIn: string
+  clockOut: string | null
+  hours: number
+  source: 'BIOMETRIC' | 'MANUAL'
+  adjusted: boolean
+  shiftId: string | null
+  notes: string | null
+}
+
+export type AttendanceEmployeeBucket = {
+  employee: Employee
+  days: Record<string, AttendanceRecordItem[]>
+  totals: { days: number; hours: number }
+}
+
+export type PayrollPeriodItem = {
+  id: string
+  businessId: string
+  startDate: string
+  endDate: string
+  status: 'DRAFT' | 'REVIEW' | 'CLOSED'
+  closedAt: string | null
+  total?: number
+}
+
+export type PayrollRow = {
+  employeeId: string
+  employee: { id: string; name: string; position: string; locationId: string | null; payType: string; dailyRate: number | null }
+  daysWorked: number
+  regularHours: number
+  basePay: number
+  overtimePay: number
+  bonuses: number
+  tips: number
+  deductions: number
+  total: number
+  notes: string | null
+}
+
+export async function getEmployees({ token, businessId, includeInactive = false }: { token: string; businessId: string; includeInactive?: boolean }) {
+  const query = includeInactive ? '?includeInactive=true' : ''
+  return request<{ items: Employee[] }>(`/businesses/${businessId}/employees${query}`, { method: 'GET', token })
+}
+
+export async function createEmployee({ token, businessId, payload }: {
+  token: string; businessId: string
+  payload: { name: string; position: string; payType?: 'DAILY' | 'HOURLY' | 'FIXED'; dailyRate?: number; hourlyRate?: number; biometricId?: string; locationId?: string | null }
+}) {
+  return request<{ employee: Employee }>(`/businesses/${businessId}/employees`, { method: 'POST', token, body: payload })
+}
+
+export async function patchEmployee({ token, businessId, employeeId, payload }: {
+  token: string; businessId: string; employeeId: string
+  payload: { name?: string; position?: string; payType?: 'DAILY' | 'HOURLY' | 'FIXED'; dailyRate?: number | null; hourlyRate?: number | null; biometricId?: string | null; locationId?: string | null; active?: boolean }
+}) {
+  return request<{ employee: Employee }>(`/businesses/${businessId}/employees/${employeeId}`, { method: 'PATCH', token, body: payload })
+}
+
+export async function deleteEmployee({ token, businessId, employeeId }: { token: string; businessId: string; employeeId: string }) {
+  return request<{ deleted: boolean; deactivated: boolean; message: string }>(`/businesses/${businessId}/employees/${employeeId}`, { method: 'DELETE', token })
+}
+
+export async function getLocationAttendance({ token, locationId, from, to }: { token: string; locationId: string; from: string; to: string }) {
+  const params = new URLSearchParams({ from, to })
+  return request<{ items: AttendanceEmployeeBucket[] }>(`/locations/${locationId}/attendance?${params.toString()}`, { method: 'GET', token })
+}
+
+export async function createAttendance({ token, employeeId, payload }: {
+  token: string; employeeId: string
+  payload: { clockIn: string; clockOut?: string; shiftId?: string; notes?: string }
+}) {
+  return request<{ attendance: AttendanceRecordItem }>(`/employees/${employeeId}/attendance`, { method: 'POST', token, body: payload })
+}
+
+export async function patchAttendance({ token, attendanceId, payload }: {
+  token: string; attendanceId: string
+  payload: { clockIn?: string; clockOut?: string | null; notes?: string | null }
+}) {
+  return request<{ attendance: AttendanceRecordItem }>(`/attendance/${attendanceId}`, { method: 'PATCH', token, body: payload })
+}
+
+export async function deleteAttendance({ token, attendanceId }: { token: string; attendanceId: string }) {
+  return request<{ deleted: boolean }>(`/attendance/${attendanceId}`, { method: 'DELETE', token })
+}
+
+export async function importAttendance({ token, locationId, payload }: {
+  token: string; locationId: string
+  payload: { offsetHours: number; rows: Array<{ biometricId: string; timestamp: string }> }
+}) {
+  return request<{ creados: number; saltados: number; sinEmpleado: string[]; offsetHours: number }>(`/locations/${locationId}/attendance/import`, { method: 'POST', token, body: payload })
+}
+
+export async function getPayrollPeriods({ token, businessId }: { token: string; businessId: string }) {
+  return request<{ items: PayrollPeriodItem[] }>(`/businesses/${businessId}/payroll-periods`, { method: 'GET', token })
+}
+
+export async function createPayrollPeriod({ token, businessId, payload }: {
+  token: string; businessId: string; payload: { startDate: string; endDate: string }
+}) {
+  return request<{ period: PayrollPeriodItem }>(`/businesses/${businessId}/payroll-periods`, { method: 'POST', token, body: payload })
+}
+
+export async function getPayrollPeriod({ token, periodId }: { token: string; periodId: string }) {
+  return request<{ period: PayrollPeriodItem; rows: PayrollRow[] }>(`/payroll-periods/${periodId}`, { method: 'GET', token })
+}
+
+export async function putPayrollEntry({ token, periodId, employeeId, payload }: {
+  token: string; periodId: string; employeeId: string
+  payload: { overtimePay?: number; bonuses?: number; tips?: number; deductions?: number; notes?: string | null }
+}) {
+  return request<{ entry: unknown }>(`/payroll-periods/${periodId}/entries/${employeeId}`, { method: 'PUT', token, body: payload })
+}
+
+export async function closePayrollPeriod({ token, periodId }: { token: string; periodId: string }) {
+  return request<{ period: PayrollPeriodItem; expenses: unknown[] }>(`/payroll-periods/${periodId}/close`, { method: 'POST', token })
+}
+
+export async function reopenPayrollPeriod({ token, periodId }: { token: string; periodId: string }) {
+  return request<{ period: PayrollPeriodItem; deletedExpenses: number }>(`/payroll-periods/${periodId}/reopen`, { method: 'POST', token })
+}

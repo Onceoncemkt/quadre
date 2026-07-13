@@ -1629,3 +1629,95 @@ body {
     grid-template-columns: 1fr;
   }
 }
+
+/* ---- Nómina ---- */
+.q-table td.is-center,
+.q-table th.is-center {
+  text-align: center;
+}
+
+.q-attendance-wrap {
+  overflow-x: auto;
+}
+
+.q-attendance-grid th,
+.q-attendance-grid td {
+  white-space: nowrap;
+}
+
+.q-attendance-cell {
+  cursor: pointer;
+}
+
+.q-attendance-cell:hover {
+  background: #f2f7f4;
+}
+
+.q-attendance-mark {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  color: #39610d;
+  font-weight: 700;
+}
+
+.q-attendance-hours {
+  font-size: 11px;
+  color: var(--gris);
+  font-weight: 500;
+}
+
+.q-attendance-multi {
+  font-size: 10px;
+  color: var(--verde);
+}
+
+.q-attendance-empty {
+  color: #c3c8c0;
+}
+
+.q-payroll-input {
+  width: 84px;
+  text-align: right;
+  padding: 4px 6px;
+  border: 1px solid var(--linea);
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.q-payroll-table th,
+.q-payroll-table td {
+  white-space: nowrap;
+}
+
+.q-payroll-total {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 16px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 2px solid var(--tinta);
+}
+
+.q-payroll-total span {
+  font-size: 13px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--gris);
+}
+
+.q-payroll-total strong {
+  font-size: 26px;
+}
+
+.q-payroll-detail {
+  display: grid;
+  gap: 6px;
+}
+
+@media (max-width: 720px) {
+  .q-payroll-input {
+    width: 64px;
+  }
+}
