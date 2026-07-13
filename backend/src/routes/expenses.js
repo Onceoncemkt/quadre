@@ -3,6 +3,7 @@ const { z } = require('zod');
 const { prisma } = require('../lib/prisma');
 const { authMiddleware } = require('../middleware/auth');
 const { requireRole } = require('../middleware/requireRole');
+const { getLineAssignedMoneyAccountId, getAccountFeeFactor } = require('./moneyAccounts');
 
 const expensesRouter = Router();
 
@@ -392,6 +393,29 @@ expensesRouter.get('/locations/:locationId/pnl', authMiddleware, async (req, res
     operativos = Number(operativos.toFixed(2));
     financieros = Number(financieros.toFixed(2));
 
+    // Comisión bancaria de terminal: gasto financiero derivado de las ventas con tarjeta
+    // (no es un Expense capturado; se calcula de las líneas × el factor de la cuenta destino).
+    const [feeAccounts, feeChannelMaps, feeCardLines, feeBusiness] = await Promise.all([
+      prisma.moneyAccount.findMany({ where: { businessId: location.businessId } }),
+      prisma.channelAccountMap.findMany({ where: { businessId: location.businessId }, select: { channel: true, moneyAccountId: true } }),
+      prisma.closingLine.findMany({
+        where: { closing: { shift: { locationId, voidedAt: null, date: { gte: monthBounds.start, lt: monthBounds.end } } } },
+        select: { channel: true, method: true, net: true },
+      }),
+      prisma.business.findUnique({ where: { id: location.businessId }, select: { defaultMoneyAccountId: true } }),
+    ]);
+    const feeChannelMap = new Map(feeChannelMaps.map((m) => [m.channel, m.moneyAccountId]));
+    const feeAccountById = new Map(feeAccounts.map((a) => [a.id, a]));
+    let comisionTerminal = 0;
+    for (const line of feeCardLines) {
+      const acctId = getLineAssignedMoneyAccountId({ line, channelMapByChannel: feeChannelMap, defaultMoneyAccountId: feeBusiness?.defaultMoneyAccountId });
+      if (!acctId) continue;
+      const factor = getAccountFeeFactor(feeAccountById.get(acctId) || {});
+      if (factor > 0) comisionTerminal += Number(line.net || 0) * factor;
+    }
+    comisionTerminal = Number(comisionTerminal.toFixed(2));
+    financieros = Number((financieros + comisionTerminal).toFixed(2));
+
     const utilidadBruta = Number((ingresos - costoVenta).toFixed(2));
     const utilidadOperativa = Number((utilidadBruta - operativos - financieros).toFixed(2));
     const margen = ingresos === 0 ? 0 : Number((utilidadOperativa / ingresos).toFixed(4));
@@ -407,6 +431,11 @@ expensesRouter.get('/locations/:locationId/pnl', authMiddleware, async (req, res
       })
       .sort((a, b) => b.total - a.total);
 
+    if (comisionTerminal > 0) {
+      desgloseCategorias.push({ categoria: 'Comisión terminal', kind: 'FINANCIERO', total: comisionTerminal });
+      desgloseCategorias.sort((a, b) => b.total - a.total);
+    }
+
     res.status(200).json({
       ok: true,
       month,
@@ -414,6 +443,7 @@ expensesRouter.get('/locations/:locationId/pnl', authMiddleware, async (req, res
       costoVenta,
       operativos,
       financieros,
+      comisionTerminal,
       utilidadBruta,
       utilidadOperativa,
       margen,

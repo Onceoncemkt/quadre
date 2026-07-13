@@ -21,6 +21,9 @@ model MoneyAccount {
   name                String
   kind                MoneyAccountKind @default(TERMINAL)
   initialBalance      Decimal  @default(0) @db.Decimal(12, 2)
+  // Comisión bancaria de la terminal sobre ventas con tarjeta (0 = sin comisión).
+  cardFeePct          Decimal  @default(0) @db.Decimal(5, 2)  // ej. 2.75
+  cardFeeIvaPct       Decimal  @default(16) @db.Decimal(5, 2) // IVA sobre la comisión
   active              Boolean  @default(true)
   createdAt           DateTime @default(now())
 

@@ -14,6 +14,8 @@ const createMoneyAccountSchema = z.object({
   name: z.string().trim().min(1),
   kind: z.enum(moneyAccountKinds).optional(),
   initialBalance: z.coerce.number().optional(),
+  cardFeePct: z.coerce.number().min(0).max(100).optional(),
+  cardFeeIvaPct: z.coerce.number().min(0).max(100).optional(),
 });
 
 const patchMoneyAccountSchema = z
@@ -21,6 +23,8 @@ const patchMoneyAccountSchema = z
     name: z.string().trim().min(1).optional(),
     kind: z.enum(moneyAccountKinds).optional(),
     initialBalance: z.coerce.number().optional(),
+    cardFeePct: z.coerce.number().min(0).max(100).optional(),
+    cardFeeIvaPct: z.coerce.number().min(0).max(100).optional(),
     active: z.boolean().optional(),
   })
   .refine((data) => Object.keys(data).length > 0, {
@@ -83,6 +87,14 @@ function getAccountBalance({ kind, initialBalance, entries, outflows }) {
     return toMoney(initialBalance + outflows - entries);
   }
   return toMoney(initialBalance + entries - outflows);
+}
+
+// Factor efectivo de comisión bancaria de la terminal (ej. 2.75% × 1.16 = 0.0319).
+function getAccountFeeFactor(account) {
+  const pct = Number(account.cardFeePct || 0);
+  if (pct <= 0) return 0;
+  const iva = Number(account.cardFeeIvaPct || 0);
+  return (pct / 100) * (1 + iva / 100);
 }
 
 function getLineAssignedMoneyAccountId({ line, channelMapByChannel, defaultMoneyAccountId }) {
@@ -162,6 +174,8 @@ moneyAccountsRouter.post(
           name: parsed.data.name,
           kind: parsed.data.kind || 'TERMINAL',
           initialBalance: toMoney(parsed.data.initialBalance || 0),
+          ...(parsed.data.cardFeePct !== undefined ? { cardFeePct: toMoney(parsed.data.cardFeePct) } : {}),
+          ...(parsed.data.cardFeeIvaPct !== undefined ? { cardFeeIvaPct: toMoney(parsed.data.cardFeeIvaPct) } : {}),
         },
       });
       res.status(201).json({ ok: true, moneyAccount });
@@ -201,6 +215,8 @@ moneyAccountsRouter.patch(
           ...(parsed.data.initialBalance !== undefined
             ? { initialBalance: toMoney(parsed.data.initialBalance) }
             : {}),
+          ...(parsed.data.cardFeePct !== undefined ? { cardFeePct: toMoney(parsed.data.cardFeePct) } : {}),
+          ...(parsed.data.cardFeeIvaPct !== undefined ? { cardFeeIvaPct: toMoney(parsed.data.cardFeeIvaPct) } : {}),
           ...(parsed.data.active !== undefined ? { active: parsed.data.active } : {}),
         },
       });
@@ -633,7 +649,10 @@ moneyAccountsRouter.get(
             .filter((payment) => payment.moneyAccountId === account.id)
             .reduce((sum, payment) => sum + Number(payment.amount || 0), 0),
         );
-        const monthOutflows = toMoney(monthExpenseOutflows + monthSupplierOutflows);
+        // Comisión bancaria de la terminal sobre las ventas con tarjeta del mes.
+        const feeFactor = getAccountFeeFactor(account);
+        const monthCommission = toMoney(monthEntries * feeFactor);
+        const monthOutflows = toMoney(monthExpenseOutflows + monthSupplierOutflows + monthCommission);
         const monthNet = toMoney(monthEntries - monthOutflows);
         const balance = getAccountBalance({
           kind: account.kind,
@@ -648,10 +667,13 @@ moneyAccountsRouter.get(
           name: account.name,
           kind: account.kind,
           initialBalance: toMoney(account.initialBalance),
+          cardFeePct: toMoney(account.cardFeePct),
+          cardFeeIvaPct: toMoney(account.cardFeeIvaPct),
           active: account.active,
           createdAt: account.createdAt,
           isDefault: business.defaultMoneyAccountId === account.id,
           monthEntries,
+          monthCommission,
           monthOutflows,
           monthNet,
           balance,
@@ -838,7 +860,32 @@ moneyAccountsRouter.get('/money-accounts/:moneyAccountId/movements', authMiddlew
       createdBy: payment.createdById ? userMap.get(payment.createdById) || null : null,
     }));
 
-    const movements = [...saleMovements, ...expenseMovements, ...paymentMovements].sort((a, b) => {
+    // Comisión bancaria de la terminal: egreso derivado por día = bruto tarjeta × factor.
+    const feeFactor = getAccountFeeFactor(account);
+    const commissionMovements = [];
+    if (feeFactor > 0) {
+      const salesByDay = new Map();
+      filteredSalesLines.forEach((line) => {
+        const dayKey = toDayKey(line.closing.shift.date);
+        salesByDay.set(dayKey, (salesByDay.get(dayKey) || 0) + Number(line.net || 0));
+      });
+      for (const [dayKey, bruto] of salesByDay.entries()) {
+        const amount = toMoney(bruto * feeFactor);
+        if (amount <= 0) continue;
+        const dayDate = new Date(`${dayKey}T00:00:00.000Z`);
+        commissionMovements.push({
+          id: `terminal-fee-${dayKey}`,
+          date: dayDate,
+          createdAt: dayDate,
+          description: `Comisión terminal (${Number(account.cardFeePct)}% + IVA) · ${formatDdMm(dayDate)}`,
+          type: 'salida',
+          amount,
+          createdBy: null,
+        });
+      }
+    }
+
+    const movements = [...saleMovements, ...commissionMovements, ...expenseMovements, ...paymentMovements].sort((a, b) => {
       const dateDiff = new Date(b.date).getTime() - new Date(a.date).getTime();
       if (dateDiff !== 0) return dateDiff;
       const createdAtDiff = new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
@@ -903,4 +950,4 @@ moneyAccountsRouter.get('/money-accounts/:moneyAccountId/movements', authMiddlew
   }
 });
 
-module.exports = { moneyAccountsRouter };
+module.exports = { moneyAccountsRouter, getLineAssignedMoneyAccountId, getAccountFeeFactor };

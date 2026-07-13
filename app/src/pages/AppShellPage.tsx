@@ -974,6 +974,8 @@ export function AppShellPage() {
   const [newMoneyAccountName, setNewMoneyAccountName] = useState('')
   const [newMoneyAccountKind, setNewMoneyAccountKind] = useState<'TERMINAL' | 'CREDITO' | 'DEBITO'>('TERMINAL')
   const [newMoneyAccountInitialBalance, setNewMoneyAccountInitialBalance] = useState(0)
+  const [newMoneyAccountFeePct, setNewMoneyAccountFeePct] = useState('0')
+  const [newMoneyAccountFeeIva, setNewMoneyAccountFeeIva] = useState('16')
   const [expandedMoneyAccountId, setExpandedMoneyAccountId] = useState('')
   const [moneyAccountsMonth, setMoneyAccountsMonth] = useState(getCurrentMonthInput())
   const [showInactiveMoneyAccounts, setShowInactiveMoneyAccounts] = useState(false)
@@ -2181,6 +2183,8 @@ export function AppShellPage() {
             name: newMoneyAccountName.trim(),
             kind: newMoneyAccountKind,
             initialBalance: newMoneyAccountInitialBalance,
+            cardFeePct: Number(newMoneyAccountFeePct) || 0,
+            cardFeeIvaPct: Number(newMoneyAccountFeeIva) || 0,
           },
         })
       } else {
@@ -2191,6 +2195,8 @@ export function AppShellPage() {
             name: newMoneyAccountName.trim(),
             kind: newMoneyAccountKind,
             initialBalance: newMoneyAccountInitialBalance,
+            cardFeePct: Number(newMoneyAccountFeePct) || 0,
+            cardFeeIvaPct: Number(newMoneyAccountFeeIva) || 0,
           },
         })
       }
@@ -2199,6 +2205,8 @@ export function AppShellPage() {
       setNewMoneyAccountName('')
       setNewMoneyAccountKind('TERMINAL')
       setNewMoneyAccountInitialBalance(0)
+      setNewMoneyAccountFeePct('0')
+      setNewMoneyAccountFeeIva('16')
       setShowMoneyAccountForm(false)
       setMoneyAccountsSuccess(editingMoneyAccountId ? 'Tarjeta actualizada ✓' : 'Tarjeta creada ✓')
     } catch (error) {
@@ -5546,6 +5554,8 @@ export function AppShellPage() {
                   setNewMoneyAccountName('')
                   setNewMoneyAccountKind('TERMINAL')
                   setNewMoneyAccountInitialBalance(0)
+                  setNewMoneyAccountFeePct('0')
+                  setNewMoneyAccountFeeIva('16')
                 }
                 setShowMoneyAccountForm((prev) => !prev)
               }}
@@ -5598,6 +5608,13 @@ export function AppShellPage() {
       {moneyAccountsSuccess ? <p className="q-success-text">{moneyAccountsSuccess}</p> : null}
       {moneyAccountsError ? <p className="q-error-text">{moneyAccountsError}</p> : null}
 
+      {!loadingMoneyAccounts && moneyAccounts.some((a) => (a.monthCommission || 0) > 0) ? (
+        <section className="q-card q-commission-summary">
+          <span className="q-table-muted">Comisiones de terminal del mes</span>
+          <strong className="q-mono q-error-text">−{formatMoney(moneyAccounts.reduce((sum, a) => sum + (a.monthCommission || 0), 0))}</strong>
+        </section>
+      ) : null}
+
       {showMoneyAccountForm ? (
         <div className="q-card q-payables-form">
           <div className="q-field-grid-3">
@@ -5633,6 +5650,19 @@ export function AppShellPage() {
               />
             </label>
           </div>
+          <div className="q-field-grid-2">
+            <label className="q-field">
+              Comisión terminal % (0 = sin comisión)
+              <input type="number" min={0} step="0.01" value={newMoneyAccountFeePct} onChange={(event) => setNewMoneyAccountFeePct(event.target.value)} />
+            </label>
+            <label className="q-field">
+              IVA sobre comisión %
+              <input type="number" min={0} step="0.01" value={newMoneyAccountFeeIva} onChange={(event) => setNewMoneyAccountFeeIva(event.target.value)} />
+            </label>
+          </div>
+          {Number(newMoneyAccountFeePct) > 0 ? (
+            <p className="q-table-muted">Factor efectivo: {(Number(newMoneyAccountFeePct) * (1 + Number(newMoneyAccountFeeIva) / 100)).toFixed(2)}% sobre el bruto de tarjeta.</p>
+          ) : null}
           <button className="q-btn q-btn-inline" type="button" onClick={() => handleCreateMoneyAccount()}>
             {editingMoneyAccountId ? 'Guardar cambios' : 'Guardar tarjeta'}
           </button>
@@ -5645,6 +5675,8 @@ export function AppShellPage() {
                 setNewMoneyAccountName('')
                 setNewMoneyAccountKind('TERMINAL')
                 setNewMoneyAccountInitialBalance(0)
+                setNewMoneyAccountFeePct('0')
+                setNewMoneyAccountFeeIva('16')
                 setShowMoneyAccountForm(false)
               }}
             >
@@ -5692,6 +5724,11 @@ export function AppShellPage() {
                   Entradas mes: <strong className="q-mono">{formatMoney(account.monthEntries)}</strong> · Salidas mes:{' '}
                   <strong className="q-mono">{formatMoney(account.monthOutflows)}</strong>
                 </p>
+                {account.cardFeePct > 0 ? (
+                  <p className="q-table-muted">
+                    Comisión terminal ({account.cardFeePct}% + IVA): <strong className="q-mono q-error-text">−{formatMoney(account.monthCommission)}</strong>
+                  </p>
+                ) : null}
                 {account.kind === 'CREDITO' ? (
                   <p className="q-table-muted">En crédito: cargos suben deuda y abonos la reducen.</p>
                 ) : null}
@@ -5718,6 +5755,8 @@ export function AppShellPage() {
                         setNewMoneyAccountName(account.name)
                         setNewMoneyAccountKind(account.kind)
                         setNewMoneyAccountInitialBalance(asDecimal(account.initialBalance))
+                        setNewMoneyAccountFeePct(String(account.cardFeePct ?? 0))
+                        setNewMoneyAccountFeeIva(String(account.cardFeeIvaPct ?? 16))
                         setShowMoneyAccountForm(true)
                       }}
                     >

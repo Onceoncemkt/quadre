@@ -155,6 +155,8 @@ export async function createBusinessMoneyAccount({
     name: string
     kind?: 'TERMINAL' | 'CREDITO' | 'DEBITO'
     initialBalance?: number
+    cardFeePct?: number
+    cardFeeIvaPct?: number
   }
 }) {
   return request<{ moneyAccount: MoneyAccountItem }>(`/businesses/${businessId}/money-accounts`, {
@@ -177,6 +179,8 @@ export async function patchBusinessMoneyAccount({
     name?: string
     kind?: 'TERMINAL' | 'CREDITO' | 'DEBITO'
     initialBalance?: number
+    cardFeePct?: number
+    cardFeeIvaPct?: number
     active?: boolean
   }
 }) {
@@ -287,10 +291,13 @@ export type MoneyAccountItem = {
   name: string
   kind: 'TERMINAL' | 'CREDITO' | 'DEBITO'
   initialBalance: number
+  cardFeePct: number
+  cardFeeIvaPct: number
   active: boolean
   createdAt: string
   isDefault: boolean
   monthEntries: number
+  monthCommission: number
   monthOutflows: number
   monthNet: number
   balance: number
