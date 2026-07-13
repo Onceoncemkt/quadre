@@ -1304,6 +1304,20 @@ export type Employee = {
   biometricId: string | null
   active: boolean
   hiredAt: string | null
+  schedule: Array<{ weekday: number; startTime: string }>
+}
+
+export type PayrollDay = {
+  date: string
+  clockInLabel: string | null
+  clockOutLabel: string | null
+  pactada: string | null
+  tardinessMin: number
+  hours: number
+  dayPay: number
+  dayDiscount: number
+  missingPunch: 'ENTRADA' | 'SALIDA' | null
+  dayFine: number
 }
 
 export type AttendanceRecordItem = {
@@ -1335,7 +1349,7 @@ export type PayrollPeriodItem = {
 
 export type PayrollRow = {
   employeeId: string
-  employee: { id: string; name: string; position: string; locationId: string | null; payType: string; dailyRate: number | null }
+  employee: { id: string; name: string; position: string; locationId: string | null; payType: string; dailyRate: number | null; hourlyRate?: number | null }
   daysWorked: number
   regularHours: number
   basePay: number
@@ -1343,8 +1357,13 @@ export type PayrollRow = {
   bonuses: number
   tips: number
   deductions: number
+  tardinessMinutes: number
+  tardinessDiscount: number
+  noCheckCount: number
+  noCheckFine: number
   total: number
   notes: string | null
+  days: PayrollDay[]
 }
 
 export async function getEmployees({ token, businessId, includeInactive = false }: { token: string; businessId: string; includeInactive?: boolean }) {
@@ -1368,6 +1387,12 @@ export async function patchEmployee({ token, businessId, employeeId, payload }: 
 
 export async function deleteEmployee({ token, businessId, employeeId }: { token: string; businessId: string; employeeId: string }) {
   return request<{ deleted: boolean; deactivated: boolean; message: string }>(`/businesses/${businessId}/employees/${employeeId}`, { method: 'DELETE', token })
+}
+
+export async function putEmployeeSchedule({ token, employeeId, schedule }: {
+  token: string; employeeId: string; schedule: Array<{ weekday: number; startTime: string }>
+}) {
+  return request<{ schedule: Array<{ weekday: number; startTime: string }> }>(`/employees/${employeeId}/schedule`, { method: 'PUT', token, body: { schedule } })
 }
 
 export async function getLocationAttendance({ token, locationId, from, to }: { token: string; locationId: string; from: string; to: string }) {

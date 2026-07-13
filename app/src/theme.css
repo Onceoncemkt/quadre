@@ -1721,3 +1721,45 @@ body {
     width: 64px;
   }
 }
+
+/* ---- Nómina bloque 4: horario + desglose por día ---- */
+.q-schedule-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.q-schedule-cell {
+  display: grid;
+  gap: 2px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--gris);
+  text-align: center;
+}
+
+.q-schedule-cell input {
+  width: 100%;
+  padding: 6px 4px;
+  border: 1px solid var(--linea);
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.q-payroll-days {
+  min-width: 640px;
+  margin: 0;
+}
+
+.q-payroll-days th,
+.q-payroll-days td {
+  padding: 8px 10px;
+  font-size: 13px;
+}
+
+@media (max-width: 720px) {
+  .q-schedule-grid {
+    grid-template-columns: repeat(4, 1fr);
+  }
+}

@@ -51,6 +51,7 @@ import {
   createEmployee,
   patchEmployee,
   deleteEmployee,
+  putEmployeeSchedule,
   getLocationAttendance,
   createAttendance,
   patchAttendance,
@@ -828,9 +829,22 @@ const emptyEmployeeForm = {
   position: '',
   payType: 'DAILY' as 'DAILY' | 'HOURLY' | 'FIXED',
   dailyRate: '',
+  hourlyRate: '',
   biometricId: '',
   locationId: 'ALL',
+  schedule: ['', '', '', '', '', '', ''], // índice = weekday 0=domingo … 6=sábado
 }
+
+// Orden de despliegue lunes→domingo con su weekday (0=domingo)
+const WEEKDAY_ORDER = [
+  { weekday: 1, label: 'Lun' },
+  { weekday: 2, label: 'Mar' },
+  { weekday: 3, label: 'Mié' },
+  { weekday: 4, label: 'Jue' },
+  { weekday: 5, label: 'Vie' },
+  { weekday: 6, label: 'Sáb' },
+  { weekday: 0, label: 'Dom' },
+]
 
 export function AppShellPage() {
   const { logout, memberships, loadingUser, refreshMe, user, token } = useAuth()
@@ -908,6 +922,7 @@ export function AppShellPage() {
   const [periodActionError, setPeriodActionError] = useState('')
   const [periodActionBusy, setPeriodActionBusy] = useState(false)
   const [showCloseConfirm, setShowCloseConfirm] = useState(false)
+  const [expandedPayrollRow, setExpandedPayrollRow] = useState('')
   const [dashboardSummary, setDashboardSummary] = useState<DashboardSummary | null>(null)
   const [loadingDashboard, setLoadingDashboard] = useState(false)
   const [dashboardError, setDashboardError] = useState('')
@@ -6544,13 +6559,19 @@ export function AppShellPage() {
   }
   function openEditEmployee(emp: Employee) {
     setEditingEmployeeId(emp.id)
+    const schedule = ['', '', '', '', '', '', '']
+    ;(emp.schedule || []).forEach((entry) => {
+      if (entry.weekday >= 0 && entry.weekday <= 6) schedule[entry.weekday] = entry.startTime
+    })
     setEmployeeForm({
       name: emp.name,
       position: emp.position,
       payType: emp.payType,
       dailyRate: emp.dailyRate != null ? String(emp.dailyRate) : '',
+      hourlyRate: emp.hourlyRate != null ? String(emp.hourlyRate) : '',
       biometricId: emp.biometricId || '',
       locationId: emp.locationId || 'ALL',
+      schedule,
     })
     setEmployeeFormError('')
     setShowEmployeeForm(true)
@@ -6561,23 +6582,30 @@ export function AppShellPage() {
     setSavingEmployee(true)
     setEmployeeFormError('')
     try {
-      const rate = employeeForm.dailyRate ? Number(employeeForm.dailyRate) : null
+      const dailyRate = employeeForm.dailyRate ? Number(employeeForm.dailyRate) : null
+      const hourlyRate = employeeForm.hourlyRate ? Number(employeeForm.hourlyRate) : null
       const bio = employeeForm.biometricId.trim() || null
       const locationId = employeeForm.locationId === 'ALL' ? null : employeeForm.locationId
+      const scheduleEntries = employeeForm.schedule
+        .map((startTime, weekday) => ({ weekday, startTime: startTime.trim() }))
+        .filter((entry) => /^([01]\d|2[0-3]):[0-5]\d$/.test(entry.startTime))
+      let employeeId = editingEmployeeId
       if (editingEmployeeId) {
         await patchEmployee({
           token,
           businessId: selectedBusinessId,
           employeeId: editingEmployeeId,
-          payload: { name: employeeForm.name.trim(), position: employeeForm.position.trim(), payType: employeeForm.payType, dailyRate: rate, biometricId: bio, locationId },
+          payload: { name: employeeForm.name.trim(), position: employeeForm.position.trim(), payType: employeeForm.payType, dailyRate, hourlyRate, biometricId: bio, locationId },
         })
       } else {
-        await createEmployee({
+        const response = await createEmployee({
           token,
           businessId: selectedBusinessId,
-          payload: { name: employeeForm.name.trim(), position: employeeForm.position.trim(), payType: employeeForm.payType, dailyRate: rate ?? undefined, biometricId: bio ?? undefined, locationId },
+          payload: { name: employeeForm.name.trim(), position: employeeForm.position.trim(), payType: employeeForm.payType, dailyRate: dailyRate ?? undefined, hourlyRate: hourlyRate ?? undefined, biometricId: bio ?? undefined, locationId },
         })
+        employeeId = response.employee.id
       }
+      await putEmployeeSchedule({ token, employeeId, schedule: scheduleEntries })
       setShowEmployeeForm(false)
       await refreshEmployees()
     } catch (error) {
@@ -6847,10 +6875,17 @@ export function AppShellPage() {
                 <option value="FIXED">Fijo</option>
               </select>
             </label>
-            <label className="q-field">
-              $ por día
-              <input type="number" min="0" step="0.01" value={employeeForm.dailyRate} onChange={(e) => setEmployeeForm((prev) => ({ ...prev, dailyRate: e.target.value }))} />
-            </label>
+            {employeeForm.payType === 'HOURLY' ? (
+              <label className="q-field">
+                $ por hora
+                <input type="number" min="0" step="0.01" value={employeeForm.hourlyRate} onChange={(e) => setEmployeeForm((prev) => ({ ...prev, hourlyRate: e.target.value }))} />
+              </label>
+            ) : (
+              <label className="q-field">
+                $ por día
+                <input type="number" min="0" step="0.01" value={employeeForm.dailyRate} onChange={(e) => setEmployeeForm((prev) => ({ ...prev, dailyRate: e.target.value }))} />
+              </label>
+            )}
             <label className="q-field">
               ID checador
               <input type="text" value={employeeForm.biometricId} onChange={(e) => setEmployeeForm((prev) => ({ ...prev, biometricId: e.target.value }))} />
@@ -6865,6 +6900,25 @@ export function AppShellPage() {
               ))}
             </select>
           </label>
+          <div className="q-field">
+            Horario semanal (hora pactada de entrada · vacío = descansa)
+            <div className="q-schedule-grid">
+              {WEEKDAY_ORDER.map(({ weekday, label }) => (
+                <label key={weekday} className="q-schedule-cell">
+                  <span>{label}</span>
+                  <input
+                    type="time"
+                    value={employeeForm.schedule[weekday]}
+                    onChange={(e) => setEmployeeForm((prev) => {
+                      const schedule = [...prev.schedule]
+                      schedule[weekday] = e.target.value
+                      return { ...prev, schedule }
+                    })}
+                  />
+                </label>
+              ))}
+            </div>
+          </div>
           {employeeFormError ? <p className="q-error-text">{employeeFormError}</p> : null}
           <div className="q-table-actions">
             <button className="q-btn q-btn-inline" type="submit" disabled={savingEmployee}>
@@ -6889,7 +6943,7 @@ export function AppShellPage() {
               <tr>
                 <th>Nombre</th>
                 <th>Puesto</th>
-                <th className="is-right">$/día</th>
+                <th className="is-right">Tarifa</th>
                 <th>ID checador</th>
                 <th>Sucursal</th>
                 <th>Estado</th>
@@ -6901,7 +6955,11 @@ export function AppShellPage() {
                 <tr key={emp.id} className={emp.active ? '' : 'q-row-inactive'}>
                   <td>{emp.name}</td>
                   <td>{emp.position} · <span className="q-table-muted">{formatPayType(emp.payType)}</span></td>
-                  <td className="is-right q-mono">{emp.dailyRate != null ? formatMoney(emp.dailyRate) : '—'}</td>
+                  <td className="is-right q-mono">
+                    {emp.payType === 'HOURLY'
+                      ? emp.hourlyRate != null ? `${formatMoney(emp.hourlyRate)}/hr` : '—'
+                      : emp.dailyRate != null ? `${formatMoney(emp.dailyRate)}/día` : '—'}
+                  </td>
                   <td className="q-mono">{emp.biometricId || '—'}</td>
                   <td>{businessLocationName(emp.locationId)}</td>
                   <td>{emp.active ? <span className="q-chip ok">Activo</span> : <span className="q-chip voided">Inactivo</span>}</td>
@@ -7004,7 +7062,7 @@ export function AppShellPage() {
       const bonuses = isClosed || !edit ? row.bonuses : Number(edit.bonuses) || 0
       const tips = isClosed || !edit ? row.tips : Number(edit.tips) || 0
       const deductions = isClosed || !edit ? row.deductions : Number(edit.deductions) || 0
-      const total = round2(row.basePay + overtimePay + bonuses + tips - deductions)
+      const total = round2(row.basePay + overtimePay + bonuses + tips - deductions - row.tardinessDiscount - row.noCheckFine)
       return { ...row, overtimePay, bonuses, tips, deductions, total }
     })
     const previewTotal = round2(rows.reduce((sum, row) => sum + row.total, 0))
@@ -7031,6 +7089,8 @@ export function AppShellPage() {
                 <th className="is-right">Bonos</th>
                 <th className="is-right">Propinas</th>
                 <th className="is-right">Deducc.</th>
+                <th className="is-right">Retardos</th>
+                <th className="is-right">No checó</th>
                 <th className="is-right">Total</th>
                 {!isClosed && canManageEmployees ? <th></th> : null}
               </tr>
@@ -7038,9 +7098,15 @@ export function AppShellPage() {
             <tbody>
               {rows.map((row) => {
                 const edit = entryEdits[row.employeeId] || { overtimePay: '', bonuses: '', tips: '', deductions: '' }
+                const isRowExpanded = expandedPayrollRow === row.employeeId
                 return (
-                  <tr key={row.employeeId}>
-                    <td>{row.employee.name}</td>
+                  <Fragment key={row.employeeId}>
+                  <tr>
+                    <td>
+                      <button type="button" className="q-link-btn" onClick={() => setExpandedPayrollRow((prev) => (prev === row.employeeId ? '' : row.employeeId))}>
+                        {isRowExpanded ? '▾' : '▸'} {row.employee.name}
+                      </button>
+                    </td>
                     <td className="is-right q-mono">{row.daysWorked}</td>
                     <td className="is-right q-mono">{row.regularHours}</td>
                     <td className="is-right q-mono">{formatMoney(row.basePay)}</td>
@@ -7059,11 +7125,62 @@ export function AppShellPage() {
                         <td className="is-right"><input className="q-payroll-input q-mono" type="number" min="0" step="0.01" value={edit.deductions} onChange={(e) => handleEntryEditChange(row.employeeId, 'deductions', e.target.value)} /></td>
                       </>
                     )}
+                    <td className="is-right q-mono">
+                      {row.tardinessMinutes > 0 ? (
+                        <span className="q-error-text">{row.tardinessMinutes}min · −{formatMoney(row.tardinessDiscount)}</span>
+                      ) : (
+                        <span className="q-table-muted">—</span>
+                      )}
+                    </td>
+                    <td className="is-right q-mono">
+                      {row.noCheckCount > 0 ? (
+                        <span className="q-error-text">{row.noCheckCount}× · −{formatMoney(row.noCheckFine)}</span>
+                      ) : (
+                        <span className="q-table-muted">—</span>
+                      )}
+                    </td>
                     <td className="is-right q-mono"><strong>{formatMoney(row.total)}</strong></td>
                     {!isClosed && canManageEmployees ? (
                       <td><button type="button" className="q-link-btn" disabled={savingEntryId === row.employeeId} onClick={() => handleSaveEntry(row.employeeId)}>{savingEntryId === row.employeeId ? '...' : 'Guardar'}</button></td>
                     ) : null}
                   </tr>
+                  {isRowExpanded ? (
+                    <tr className="q-closing-detail-row">
+                      <td colSpan={isClosed || !canManageEmployees ? 11 : 12}>
+                        <div className="q-table-wrap">
+                          <table className="q-table q-payroll-days">
+                            <thead>
+                              <tr>
+                                <th>Día</th><th>Entrada</th><th>Salida</th><th>Pactada</th>
+                                <th className="is-right">Retardo</th><th className="is-right">Horas</th>
+                                <th className="is-right">Pago</th><th className="is-right">Descuento</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {row.days.length ? row.days.map((day) => (
+                                <tr key={day.date}>
+                                  <td>
+                                    {formatDayMonthFromIsoString(day.date)} <span className="q-table-muted">{formatWeekdayShort(day.date)}</span>
+                                    {day.missingPunch ? <span className="q-error-text"> · no checó {day.missingPunch.toLowerCase()}</span> : null}
+                                  </td>
+                                  <td className="q-mono">{day.clockInLabel || '—'}</td>
+                                  <td className="q-mono">{day.clockOutLabel || '—'}</td>
+                                  <td className="q-mono">{day.pactada || '—'}</td>
+                                  <td className="is-right q-mono">{day.tardinessMin > 0 ? <span className="q-error-text">{day.tardinessMin}min</span> : '—'}</td>
+                                  <td className="is-right q-mono">{day.hours}</td>
+                                  <td className="is-right q-mono">{formatMoney(day.dayPay)}</td>
+                                  <td className="is-right q-mono">{day.dayDiscount > 0 ? <span className="q-error-text">−{formatMoney(day.dayDiscount)}</span> : '—'}</td>
+                                </tr>
+                              )) : (
+                                <tr><td colSpan={8} className="q-table-muted">Sin asistencia en el periodo</td></tr>
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
+                      </td>
+                    </tr>
+                  ) : null}
+                  </Fragment>
                 )
               })}
             </tbody>
@@ -7229,7 +7346,7 @@ export function AppShellPage() {
               <h2>Cerrar periodo</h2>
               <button type="button" className="q-link-btn" onClick={() => setShowCloseConfirm(false)}>Cerrar</button>
             </header>
-            <p>Se registrará un gasto de <strong>Sueldos</strong> por <strong className="q-mono">{formatMoney(periodDetail.rows.reduce((sum, row) => { const edit = entryEdits[row.employeeId]; const ot = edit ? Number(edit.overtimePay) || 0 : row.overtimePay; const bo = edit ? Number(edit.bonuses) || 0 : row.bonuses; const ti = edit ? Number(edit.tips) || 0 : row.tips; const de = edit ? Number(edit.deductions) || 0 : row.deductions; return sum + row.basePay + ot + bo + ti - de }, 0))}</strong>. El periodo quedará en solo lectura.</p>
+            <p>Se registrará un gasto de <strong>Sueldos</strong> por <strong className="q-mono">{formatMoney(periodDetail.rows.reduce((sum, row) => { const edit = entryEdits[row.employeeId]; const ot = edit ? Number(edit.overtimePay) || 0 : row.overtimePay; const bo = edit ? Number(edit.bonuses) || 0 : row.bonuses; const ti = edit ? Number(edit.tips) || 0 : row.tips; const de = edit ? Number(edit.deductions) || 0 : row.deductions; return sum + row.basePay + ot + bo + ti - de - row.tardinessDiscount - row.noCheckFine }, 0))}</strong>. El periodo quedará en solo lectura.</p>
             {periodActionError ? <p className="q-error-text">{periodActionError}</p> : null}
             <div className="q-table-actions">
               <button type="button" className="q-btn q-btn-inline" disabled={periodActionBusy} onClick={handleClosePeriod}>{periodActionBusy ? 'Cerrando...' : 'Confirmar cierre'}</button>

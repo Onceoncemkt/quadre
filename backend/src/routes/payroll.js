@@ -51,6 +51,139 @@ function hoursBetween(clockIn, clockOut) {
   return Number((ms / 3_600_000).toFixed(2));
 }
 
+const TARDINESS_TOLERANCE_MIN = 6;
+const TARDINESS_PESOS_POR_MIN = 2;
+const NO_CHECK_FINE = 100; // $ por cada checada faltante
+const STANDARD_SHIFT_HOURS = 8; // turno fijo para reconstruir una salida faltante
+const RECON_THRESHOLD_MIN = 4 * 60; // si la checada suelta es > 4h después de la pactada, es la SALIDA (falta entrada)
+
+// Minutos desde medianoche de una hora local MX (a partir de un instante ISO).
+function mxClockMinutes(iso) {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'America/Mexico_City',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(new Date(iso));
+  let hour = Number(parts.find((p) => p.type === 'hour').value);
+  const minute = Number(parts.find((p) => p.type === 'minute').value);
+  if (hour === 24) hour = 0;
+  return hour * 60 + minute;
+}
+
+function mxTimeLabel(iso) {
+  if (!iso) return null;
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'America/Mexico_City',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(new Date(iso));
+}
+
+// weekday 0=domingo … 6=sábado de una fecha 'YYYY-MM-DD' (MX).
+function weekdayOfDayStr(dayStr) {
+  return new Date(`${dayStr}T12:00:00.000Z`).getUTCDay();
+}
+
+function pactadaToMinutes(hhmm) {
+  const [hour, minute] = hhmm.split(':').map(Number);
+  return hour * 60 + minute;
+}
+
+// Desglose POR DÍA (la fila del Excel): horas, retardo y descuento por día.
+function computeEmployeeDays({ records, scheduleByWeekday, payType, hourlyRate, dailyRate, startStr, endStr }) {
+  const byDay = new Map();
+  for (const rec of records) {
+    const day = mxDayString(rec.clockIn);
+    if (day < startStr || day > endStr) continue;
+    if (!byDay.has(day)) byDay.set(day, []);
+    byDay.get(day).push(rec);
+  }
+  const days = [];
+  let totalHours = 0;
+  let tardinessMinutes = 0;
+  let tardinessDiscount = 0;
+  let basePay = 0;
+  let noCheckCount = 0;
+  let noCheckFine = 0;
+  for (const day of [...byDay.keys()].sort()) {
+    const recs = byDay.get(day).sort((a, b) => new Date(a.clockIn) - new Date(b.clockIn));
+    const pactadaMin = scheduleByWeekday.has(weekdayOfDayStr(day)) ? pactadaToMinutes(scheduleByWeekday.get(weekdayOfDayStr(day))) : null;
+    const pactada = scheduleByWeekday.get(weekdayOfDayStr(day)) || null;
+
+    let hours = 0;
+    let dayFine = 0;
+    let dayMissing = null; // 'ENTRADA' | 'SALIDA'
+    let effectiveEntryMin = null; // para el retardo (entrada real o reconstruida)
+    let displayInLabel = null;
+    let displayOutLabel = null;
+
+    recs.forEach((rec, index) => {
+      const punchMin = mxClockMinutes(rec.clockIn);
+      if (rec.clockOut) {
+        // Turno completo: horas reales, sin cap.
+        hours += hoursBetween(rec.clockIn, rec.clockOut);
+        if (index === 0) { effectiveEntryMin = punchMin; displayInLabel = mxTimeLabel(rec.clockIn); }
+        displayOutLabel = mxTimeLabel(rec.clockOut);
+      } else {
+        // Checada suelta → falta un punzado. $100 por cada checada faltante.
+        dayFine += NO_CHECK_FINE;
+        noCheckCount += 1;
+        if (pactadaMin != null && punchMin > pactadaMin + RECON_THRESHOLD_MIN) {
+          // La suelta es la SALIDA → falta la ENTRADA: entrada = pactada, salida = real. Cap 8h (sin extra).
+          dayMissing = 'ENTRADA';
+          hours += Math.min((punchMin - pactadaMin) / 60, STANDARD_SHIFT_HOURS);
+          if (index === 0) { effectiveEntryMin = pactadaMin; displayInLabel = pactada; }
+          displayOutLabel = mxTimeLabel(rec.clockIn);
+        } else {
+          // La suelta es la ENTRADA → falta la SALIDA: salida = entrada + turno fijo (8h).
+          dayMissing = 'SALIDA';
+          hours += STANDARD_SHIFT_HOURS;
+          if (index === 0) { effectiveEntryMin = punchMin; displayInLabel = mxTimeLabel(rec.clockIn); }
+          if (!displayOutLabel) displayOutLabel = null; // salida desconocida
+        }
+      }
+    });
+    hours = Number(hours.toFixed(2));
+
+    let retardo = 0;
+    if (pactadaMin != null && hours > 0 && effectiveEntryMin != null) {
+      const diff = effectiveEntryMin - pactadaMin;
+      retardo = diff > 0 ? diff : 0;
+    }
+    const dayDiscount = retardo > TARDINESS_TOLERANCE_MIN ? (retardo - TARDINESS_TOLERANCE_MIN) * TARDINESS_PESOS_POR_MIN : 0;
+    const dayPay = payType === 'HOURLY' ? toMoney(hours * hourlyRate) : toMoney(dailyRate);
+    totalHours += hours;
+    tardinessMinutes += retardo;
+    tardinessDiscount += dayDiscount;
+    basePay += dayPay;
+    noCheckFine += dayFine;
+    days.push({
+      date: day,
+      clockInLabel: displayInLabel,
+      clockOutLabel: displayOutLabel,
+      pactada,
+      tardinessMin: retardo,
+      hours,
+      dayPay,
+      dayDiscount: toMoney(dayDiscount),
+      missingPunch: dayMissing, // null | 'ENTRADA' | 'SALIDA'
+      dayFine: toMoney(dayFine),
+    });
+  }
+  return {
+    days,
+    daysWorked: days.length,
+    totalHours: Number(totalHours.toFixed(2)),
+    basePay: toMoney(basePay),
+    tardinessMinutes,
+    tardinessDiscount: toMoney(tardinessDiscount),
+    noCheckCount,
+    noCheckFine: toMoney(noCheckFine),
+  };
+}
+
 async function getMembershipForPeriod({ userId, periodId }) {
   const period = await prisma.payrollPeriod.findUnique({ where: { id: periodId } });
   if (!period) return { period: null, membership: null };
@@ -67,6 +200,7 @@ async function computeLiveRows(period) {
 
   const employees = await prisma.employee.findMany({
     where: { businessId: period.businessId, active: true },
+    include: { schedules: true },
     orderBy: [{ name: 'asc' }],
   });
   const employeeIds = employees.map((e) => e.id);
@@ -97,29 +231,33 @@ async function computeLiveRows(period) {
 
   const rows = employees.map((emp) => {
     const recs = attByEmployee.get(emp.id) || [];
-    const days = new Set(recs.map((r) => mxDayString(r.clockIn)));
-    const daysWorked = days.size;
-    const hours = Number(recs.reduce((s, r) => s + hoursBetween(r.clockIn, r.clockOut), 0).toFixed(2));
+    const scheduleByWeekday = new Map((emp.schedules || []).map((s) => [s.weekday, s.startTime]));
+    const hourlyRate = emp.hourlyRate != null ? Number(emp.hourlyRate) : 0;
     const dailyRate = emp.dailyRate != null ? Number(emp.dailyRate) : 0;
-    const basePay = toMoney(daysWorked * dailyRate);
+    const calc = computeEmployeeDays({ records: recs, scheduleByWeekday, payType: emp.payType, hourlyRate, dailyRate, startStr, endStr });
     const saved = savedByEmployee.get(emp.id);
     const overtimePay = saved ? Number(saved.overtimePay) : 0;
     const bonuses = saved ? Number(saved.bonuses) : 0;
     const tips = saved ? Number(saved.tips) : 0;
     const deductions = saved ? Number(saved.deductions) : 0;
-    const total = toMoney(basePay + overtimePay + bonuses + tips - deductions);
+    const total = toMoney(calc.basePay + overtimePay + bonuses + tips - deductions - calc.tardinessDiscount - calc.noCheckFine);
     return {
       employeeId: emp.id,
-      employee: { id: emp.id, name: emp.name, position: emp.position, locationId: emp.locationId, payType: emp.payType, dailyRate: dailyRate || null },
-      daysWorked,
-      regularHours: hours,
-      basePay,
+      employee: { id: emp.id, name: emp.name, position: emp.position, locationId: emp.locationId, payType: emp.payType, dailyRate: dailyRate || null, hourlyRate: hourlyRate || null },
+      daysWorked: calc.daysWorked,
+      regularHours: calc.totalHours,
+      basePay: calc.basePay,
       overtimePay: toMoney(overtimePay),
       bonuses: toMoney(bonuses),
       tips: toMoney(tips),
       deductions: toMoney(deductions),
+      tardinessMinutes: calc.tardinessMinutes,
+      tardinessDiscount: calc.tardinessDiscount,
+      noCheckCount: calc.noCheckCount,
+      noCheckFine: calc.noCheckFine,
       total,
       notes: saved ? saved.notes : null,
+      days: calc.days,
     };
   });
 
@@ -127,26 +265,64 @@ async function computeLiveRows(period) {
   return { rows, periodTotal, employees };
 }
 
-// Detalle de un periodo CLOSED: lee los entries congelados (no recalcula).
+// Detalle de un periodo CLOSED: totales congelados del entry, desglose por día para display.
 async function frozenRows(period) {
+  const startStr = dateOnlyString(period.startDate);
+  const endStr = dateOnlyString(period.endDate);
   const entries = await prisma.payrollEntry.findMany({
     where: { periodId: period.id },
-    include: { employee: { select: { id: true, name: true, position: true, locationId: true, payType: true, dailyRate: true } } },
+    include: { employee: { include: { schedules: true } } },
     orderBy: { employee: { name: 'asc' } },
   });
-  const rows = entries.map((e) => ({
-    employeeId: e.employeeId,
-    employee: { id: e.employee.id, name: e.employee.name, position: e.employee.position, locationId: e.employee.locationId, payType: e.employee.payType, dailyRate: e.employee.dailyRate != null ? Number(e.employee.dailyRate) : null },
-    daysWorked: Number(e.daysWorked),
-    regularHours: Number(e.regularHours),
-    basePay: toMoney(e.basePay),
-    overtimePay: toMoney(e.overtimePay),
-    bonuses: toMoney(e.bonuses),
-    tips: toMoney(e.tips),
-    deductions: toMoney(e.deductions),
-    total: toMoney(e.total),
-    notes: e.notes,
-  }));
+  const employeeIds = entries.map((e) => e.employeeId);
+
+  const gte = parseDateOnly(startStr);
+  gte.setUTCDate(gte.getUTCDate() - 1);
+  const lt = parseDateOnly(endStr);
+  lt.setUTCDate(lt.getUTCDate() + 2);
+  const records = employeeIds.length
+    ? await prisma.attendanceRecord.findMany({
+        where: { employeeId: { in: employeeIds }, clockIn: { gte, lt } },
+        select: { employeeId: true, clockIn: true, clockOut: true },
+      })
+    : [];
+  const attByEmployee = new Map();
+  for (const rec of records) {
+    if (!attByEmployee.has(rec.employeeId)) attByEmployee.set(rec.employeeId, []);
+    attByEmployee.get(rec.employeeId).push(rec);
+  }
+
+  const rows = entries.map((e) => {
+    const emp = e.employee;
+    const scheduleByWeekday = new Map((emp.schedules || []).map((s) => [s.weekday, s.startTime]));
+    const calc = computeEmployeeDays({
+      records: attByEmployee.get(e.employeeId) || [],
+      scheduleByWeekday,
+      payType: emp.payType,
+      hourlyRate: emp.hourlyRate != null ? Number(emp.hourlyRate) : 0,
+      dailyRate: emp.dailyRate != null ? Number(emp.dailyRate) : 0,
+      startStr,
+      endStr,
+    });
+    return {
+      employeeId: e.employeeId,
+      employee: { id: emp.id, name: emp.name, position: emp.position, locationId: emp.locationId, payType: emp.payType, dailyRate: emp.dailyRate != null ? Number(emp.dailyRate) : null, hourlyRate: emp.hourlyRate != null ? Number(emp.hourlyRate) : null },
+      daysWorked: Number(e.daysWorked),
+      regularHours: Number(e.regularHours),
+      basePay: toMoney(e.basePay),
+      overtimePay: toMoney(e.overtimePay),
+      bonuses: toMoney(e.bonuses),
+      tips: toMoney(e.tips),
+      deductions: toMoney(e.deductions),
+      tardinessMinutes: e.tardinessMinutes,
+      tardinessDiscount: toMoney(e.tardinessDiscount),
+      noCheckCount: e.noCheckCount,
+      noCheckFine: toMoney(e.noCheckFine),
+      total: toMoney(e.total),
+      notes: e.notes,
+      days: calc.days,
+    };
+  });
   const periodTotal = toMoney(rows.reduce((s, r) => s + r.total, 0));
   return { rows, periodTotal };
 }
@@ -351,6 +527,10 @@ payrollRouter.post('/payroll-periods/:periodId/close', authMiddleware, async (re
             bonuses: row.bonuses,
             tips: row.tips,
             deductions: row.deductions,
+            tardinessMinutes: row.tardinessMinutes,
+            tardinessDiscount: row.tardinessDiscount,
+            noCheckCount: row.noCheckCount,
+            noCheckFine: row.noCheckFine,
             total: row.total,
             notes: row.notes,
           },
@@ -364,6 +544,10 @@ payrollRouter.post('/payroll-periods/:periodId/close', authMiddleware, async (re
             bonuses: row.bonuses,
             tips: row.tips,
             deductions: row.deductions,
+            tardinessMinutes: row.tardinessMinutes,
+            tardinessDiscount: row.tardinessDiscount,
+            noCheckCount: row.noCheckCount,
+            noCheckFine: row.noCheckFine,
             total: row.total,
             notes: row.notes,
           },

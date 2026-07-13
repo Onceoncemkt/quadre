@@ -485,6 +485,19 @@ model Employee {
   location    Location? @relation(fields: [locationId], references: [id])
   attendance  AttendanceRecord[]
   payrollEntries PayrollEntry[]
+  schedules   EmployeeSchedule[]
+}
+
+// Hora pactada de entrada por día de la semana (weekday: 0=domingo … 6=sábado, JS getDay)
+model EmployeeSchedule {
+  id         String @id @default(cuid())
+  employeeId String
+  weekday    Int
+  startTime  String // "HH:MM"
+
+  employee   Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@unique([employeeId, weekday])
 }
 
 enum PayType {
@@ -544,6 +557,10 @@ model PayrollEntry {
   bonuses       Decimal  @default(0) @db.Decimal(12, 2) // Reto Taquiza, etc.
   tips          Decimal  @default(0) @db.Decimal(12, 2)
   deductions    Decimal  @default(0) @db.Decimal(12, 2)
+  tardinessMinutes Int    @default(0)
+  tardinessDiscount Decimal @default(0) @db.Decimal(12, 2)
+  noCheckCount  Int      @default(0) // checadas faltantes (no checó entrada o salida)
+  noCheckFine   Decimal  @default(0) @db.Decimal(12, 2) // $100 por cada checada faltante
   total         Decimal  @db.Decimal(12, 2)
   notes         String?
 

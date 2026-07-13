@@ -77,6 +77,23 @@ function parseDateTime(value) {
   return date;
 }
 
+// Una checada antes de las 06:00 MX se trata como SALIDA (cierre de turno nocturno),
+// nunca como entrada de un turno nuevo.
+const MADRUGADA_CUTOFF_MIN = 6 * 60;
+
+function mxClockMinutes(date) {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'America/Mexico_City',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(new Date(date));
+  let hour = Number(parts.find((p) => p.type === 'hour').value);
+  const minute = Number(parts.find((p) => p.type === 'minute').value);
+  if (hour === 24) hour = 0;
+  return hour * 60 + minute;
+}
+
 // Día local en America/Mexico_City como 'YYYY-MM-DD' (autoridad para agrupar).
 function mxDayString(date) {
   return new Date(date).toLocaleDateString('en-CA', { timeZone: 'America/Mexico_City' });
@@ -135,6 +152,9 @@ function serializeEmployee(employee) {
     biometricId: employee.biometricId,
     active: employee.active,
     hiredAt: employee.hiredAt,
+    schedule: (employee.schedules || [])
+      .map((entry) => ({ weekday: entry.weekday, startTime: entry.startTime }))
+      .sort((a, b) => a.weekday - b.weekday),
   };
 }
 
@@ -195,6 +215,7 @@ employeesRouter.get(
       const includeInactive = req.query.includeInactive === 'true';
       const employees = await prisma.employee.findMany({
         where: { businessId, ...(includeInactive ? {} : { active: true }) },
+        include: { schedules: true },
         orderBy: [{ active: 'desc' }, { name: 'asc' }],
       });
       res.status(200).json({ ok: true, items: employees.map(serializeEmployee) });
@@ -530,8 +551,8 @@ employeesRouter.post('/locations/:locationId/attendance/import', authMiddleware,
     });
     const empByBiometric = new Map(employees.map((e) => [e.biometricId, e.id]));
 
-    // Agrupa checadas válidas por empleado+día MX, aplicando offset.
-    const groups = new Map(); // key `${employeeId}|${mxDay}` -> [Date...]
+    // Agrupa checadas válidas por empleado, aplicando offset.
+    const stampsByEmployee = new Map(); // employeeId -> [Date...]
     const sinEmpleado = new Set();
     for (const row of parsed.data.rows) {
       const employeeId = empByBiometric.get(row.biometricId);
@@ -542,19 +563,48 @@ employeesRouter.post('/locations/:locationId/attendance/import', authMiddleware,
       const raw = parseDateTime(row.timestamp);
       if (!raw) continue; // timestamp basura → se ignora
       const adjusted = new Date(raw.getTime() + offsetMs);
-      const key = `${employeeId}|${mxDayString(adjusted)}`;
-      if (!groups.has(key)) groups.set(key, []);
-      groups.get(key).push(adjusted);
+      if (!stampsByEmployee.has(employeeId)) stampsByEmployee.set(employeeId, []);
+      stampsByEmployee.get(employeeId).push(adjusted);
     }
 
-    // Emparejamiento greedy por grupo: [in, out, in, out, ...]; huérfana final = in sin out.
+    // Emparejamiento greedy ACOTADO POR DÍA (un punzado faltante solo afecta ese día),
+    // con cruce de medianoche: si un día cierra con entrada huérfana, la primera checada
+    // de madrugada (< 06:00) del día siguiente la cierra (turno nocturno). Una checada de
+    // madrugada sin turno abierto es una salida huérfana → se descarta (no abre día nuevo).
+    // El día del turno se deriva luego del clockIn.
     const planned = []; // { employeeId, clockIn: Date, clockOut: Date|null }
-    for (const [key, stamps] of groups.entries()) {
-      const employeeId = key.split('|')[0];
+    for (const [employeeId, stamps] of stampsByEmployee.entries()) {
       stamps.sort((a, b) => a.getTime() - b.getTime());
-      for (let i = 0; i < stamps.length; i += 2) {
-        planned.push({ employeeId, clockIn: stamps[i], clockOut: stamps[i + 1] || null });
+      const byDay = new Map();
+      for (const stamp of stamps) {
+        const day = mxDayString(stamp);
+        if (!byDay.has(day)) byDay.set(day, []);
+        byDay.get(day).push(stamp);
       }
+      let carryOrphanIn = null;
+      for (const day of [...byDay.keys()].sort()) {
+        const dayStamps = byDay.get(day);
+        let idx = 0;
+        // 1) cerrar la huérfana del día anterior con una madrugada líder
+        if (carryOrphanIn !== null) {
+          if (dayStamps.length && mxClockMinutes(dayStamps[0]) < MADRUGADA_CUTOFF_MIN) {
+            planned.push({ employeeId, clockIn: carryOrphanIn, clockOut: dayStamps[0] });
+            idx = 1;
+          } else {
+            planned.push({ employeeId, clockIn: carryOrphanIn, clockOut: null });
+          }
+          carryOrphanIn = null;
+        }
+        // 2) descartar madrugadas líderes sobrantes (salidas huérfanas)
+        while (idx < dayStamps.length && mxClockMinutes(dayStamps[idx]) < MADRUGADA_CUTOFF_MIN) idx += 1;
+        // 3) greedy dentro del día; huérfana final → se lleva al día siguiente
+        const rest = dayStamps.slice(idx);
+        for (let i = 0; i < rest.length; i += 2) {
+          if (i + 1 < rest.length) planned.push({ employeeId, clockIn: rest[i], clockOut: rest[i + 1] });
+          else carryOrphanIn = rest[i];
+        }
+      }
+      if (carryOrphanIn !== null) planned.push({ employeeId, clockIn: carryOrphanIn, clockOut: null });
     }
 
     // Idempotencia: mismo empleado + mismo clockIn exacto → skip.
@@ -589,6 +639,58 @@ employeesRouter.post('/locations/:locationId/attendance/import', authMiddleware,
       sinEmpleado: [...sinEmpleado],
       offsetHours,
     });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ============================================================
+// HORARIO SEMANAL (hora pactada de entrada por día)
+// ============================================================
+
+const scheduleSchema = z.object({
+  schedule: z
+    .array(
+      z.object({
+        weekday: z.coerce.number().int().min(0).max(6),
+        startTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
+      }),
+    )
+    .max(7),
+});
+
+employeesRouter.put('/employees/:employeeId/schedule', authMiddleware, async (req, res, next) => {
+  try {
+    const { employeeId } = req.params;
+    const { employee, membership } = await getMembershipForEmployee({ userId: req.userId, employeeId });
+    if (!employee) {
+      res.status(404).json({ ok: false, error: 'Empleado no encontrado' });
+      return;
+    }
+    if (!membership || !managerRoles.includes(membership.role)) {
+      res.status(403).json({ ok: false, error: 'No autorizado para editar el horario' });
+      return;
+    }
+    const parsed = scheduleSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ ok: false, error: 'Payload inválido', details: parsed.error.flatten() });
+      return;
+    }
+    // Upsert completo: un weekday sin entrada = sin horario.
+    const deduped = new Map();
+    for (const entry of parsed.data.schedule) deduped.set(entry.weekday, entry.startTime);
+
+    await prisma.$transaction(async (tx) => {
+      await tx.employeeSchedule.deleteMany({ where: { employeeId } });
+      if (deduped.size) {
+        await tx.employeeSchedule.createMany({
+          data: [...deduped.entries()].map(([weekday, startTime]) => ({ employeeId, weekday, startTime })),
+        });
+      }
+    });
+
+    const schedule = [...deduped.entries()].map(([weekday, startTime]) => ({ weekday, startTime })).sort((a, b) => a.weekday - b.weekday);
+    res.status(200).json({ ok: true, schedule });
   } catch (error) {
     next(error);
   }
