@@ -1373,20 +1373,43 @@ export async function getEmployees({ token, businessId, includeInactive = false 
 
 export async function createEmployee({ token, businessId, payload }: {
   token: string; businessId: string
-  payload: { name: string; position: string; payType?: 'DAILY' | 'HOURLY' | 'FIXED'; dailyRate?: number; hourlyRate?: number; biometricId?: string; locationId?: string | null }
+  payload: { name: string; position: string; payType?: 'DAILY' | 'HOURLY' | 'FIXED'; dailyRate?: number; hourlyRate?: number; biometricId?: string; locationId?: string | null; hiredAt?: string }
 }) {
   return request<{ employee: Employee }>(`/businesses/${businessId}/employees`, { method: 'POST', token, body: payload })
 }
 
 export async function patchEmployee({ token, businessId, employeeId, payload }: {
   token: string; businessId: string; employeeId: string
-  payload: { name?: string; position?: string; payType?: 'DAILY' | 'HOURLY' | 'FIXED'; dailyRate?: number | null; hourlyRate?: number | null; biometricId?: string | null; locationId?: string | null; active?: boolean }
+  payload: { name?: string; position?: string; payType?: 'DAILY' | 'HOURLY' | 'FIXED'; dailyRate?: number | null; hourlyRate?: number | null; biometricId?: string | null; locationId?: string | null; hiredAt?: string | null; active?: boolean }
 }) {
   return request<{ employee: Employee }>(`/businesses/${businessId}/employees/${employeeId}`, { method: 'PATCH', token, body: payload })
 }
 
 export async function deleteEmployee({ token, businessId, employeeId }: { token: string; businessId: string; employeeId: string }) {
   return request<{ deleted: boolean; deactivated: boolean; message: string }>(`/businesses/${businessId}/employees/${employeeId}`, { method: 'DELETE', token })
+}
+
+export type SettlementConcept = { key: string; label: string; dias?: number; monto: number }
+
+export type Settlement = {
+  employee: { id: string; name: string; position: string; payType: string }
+  hiredAt: string
+  lastDay: string
+  mode: 'renuncia' | 'despido'
+  dailySalary: number
+  dailySalaryIntegrated: number
+  pendingDays: number
+  antiguedad: { years: number; months: number; days: number; label: string; totalDays: number; yearsDecimal: number }
+  conceptos: SettlementConcept[]
+  total: number
+  assumptions: string[]
+}
+
+export async function getSettlement({ token, employeeId, lastDay, dailySalary, mode, pendingDays = 0 }: {
+  token: string; employeeId: string; lastDay: string; dailySalary: number; mode: 'renuncia' | 'despido'; pendingDays?: number
+}) {
+  const params = new URLSearchParams({ lastDay, dailySalary: String(dailySalary), mode, pendingDays: String(pendingDays) })
+  return request<Settlement>(`/employees/${employeeId}/settlement?${params.toString()}`, { method: 'GET', token })
 }
 
 export async function putEmployeeSchedule({ token, employeeId, schedule }: {

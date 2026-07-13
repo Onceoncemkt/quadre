@@ -1870,3 +1870,14 @@ body {
     padding: 0;
   }
 }
+
+.q-settlement-note {
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  background: #fef6ec;
+  border: 1px solid #f2d9b8;
+  border-radius: 8px;
+  font-size: 13px;
+  color: #8a5a1a;
+  font-weight: 600;
+}

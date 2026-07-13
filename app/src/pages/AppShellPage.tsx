@@ -52,6 +52,7 @@ import {
   patchEmployee,
   deleteEmployee,
   putEmployeeSchedule,
+  getSettlement,
   getLocationAttendance,
   createAttendance,
   patchAttendance,
@@ -86,6 +87,7 @@ import {
   type AttendanceEmployeeBucket,
   type PayrollPeriodItem,
   type PayrollRow,
+  type Settlement,
 } from '../lib/api'
 import { useAuth } from '../state/auth'
 
@@ -832,7 +834,27 @@ const emptyEmployeeForm = {
   hourlyRate: '',
   biometricId: '',
   locationId: 'ALL',
+  hiredAt: '',
   schedule: ['', '', '', '', '', '', ''], // índice = weekday 0=domingo … 6=sábado
+}
+
+// Antigüedad legible desde 'YYYY-MM-DD' hasta hoy.
+function formatAntiguedad(hiredAt: string | null) {
+  if (!hiredAt) return null
+  const from = parseYmd(hiredAt)
+  const to = new Date()
+  let years = to.getUTCFullYear() - from.getUTCFullYear()
+  let months = to.getUTCMonth() - from.getUTCMonth()
+  if (to.getUTCDate() < from.getUTCDate()) months -= 1
+  if (months < 0) {
+    years -= 1
+    months += 12
+  }
+  if (years < 0) return null
+  const parts = []
+  if (years > 0) parts.push(`${years} año${years === 1 ? '' : 's'}`)
+  parts.push(`${months} mes${months === 1 ? '' : 'es'}`)
+  return parts.join(' ')
 }
 
 // Orden de despliegue lunes→domingo con su weekday (0=domingo)
@@ -923,6 +945,14 @@ export function AppShellPage() {
   const [periodActionBusy, setPeriodActionBusy] = useState(false)
   const [showCloseConfirm, setShowCloseConfirm] = useState(false)
   const [expandedPayrollRow, setExpandedPayrollRow] = useState('')
+
+  // Finiquito
+  const [settlementEmployee, setSettlementEmployee] = useState<Employee | null>(null)
+  const [settlementForm, setSettlementForm] = useState({ lastDay: '', dailySalary: '', mode: 'renuncia' as 'renuncia' | 'despido', pendingDays: '0' })
+  const [settlement, setSettlement] = useState<Settlement | null>(null)
+  const [loadingSettlement, setLoadingSettlement] = useState(false)
+  const [settlementError, setSettlementError] = useState('')
+  const [settlementCopied, setSettlementCopied] = useState(false)
   const [dashboardSummary, setDashboardSummary] = useState<DashboardSummary | null>(null)
   const [loadingDashboard, setLoadingDashboard] = useState(false)
   const [dashboardError, setDashboardError] = useState('')
@@ -1169,6 +1199,7 @@ export function AppShellPage() {
   const canClosePayroll =
     selectedBusinessMembership?.role === 'OWNER' || selectedBusinessMembership?.role === 'ADMIN'
   const canReopenPayroll = selectedBusinessMembership?.role === 'OWNER'
+  const canSeeSettlement = selectedBusinessMembership?.role === 'OWNER'
   const canCreateEnvelope =
     selectedBusinessMembership?.role === 'OWNER' || selectedBusinessMembership?.role === 'ADMIN'
   const canDepositEnvelope = canReceiveRequisition
@@ -6572,6 +6603,7 @@ export function AppShellPage() {
       hourlyRate: emp.hourlyRate != null ? String(emp.hourlyRate) : '',
       biometricId: emp.biometricId || '',
       locationId: emp.locationId || 'ALL',
+      hiredAt: emp.hiredAt || '',
       schedule,
     })
     setEmployeeFormError('')
@@ -6587,6 +6619,7 @@ export function AppShellPage() {
       const hourlyRate = employeeForm.hourlyRate ? Number(employeeForm.hourlyRate) : null
       const bio = employeeForm.biometricId.trim() || null
       const locationId = employeeForm.locationId === 'ALL' ? null : employeeForm.locationId
+      const hiredAt = employeeForm.hiredAt || null
       const scheduleEntries = employeeForm.schedule
         .map((startTime, weekday) => ({ weekday, startTime: startTime.trim() }))
         .filter((entry) => /^([01]\d|2[0-3]):[0-5]\d$/.test(entry.startTime))
@@ -6596,13 +6629,13 @@ export function AppShellPage() {
           token,
           businessId: selectedBusinessId,
           employeeId: editingEmployeeId,
-          payload: { name: employeeForm.name.trim(), position: employeeForm.position.trim(), payType: employeeForm.payType, dailyRate, hourlyRate, biometricId: bio, locationId },
+          payload: { name: employeeForm.name.trim(), position: employeeForm.position.trim(), payType: employeeForm.payType, dailyRate, hourlyRate, biometricId: bio, locationId, hiredAt },
         })
       } else {
         const response = await createEmployee({
           token,
           businessId: selectedBusinessId,
-          payload: { name: employeeForm.name.trim(), position: employeeForm.position.trim(), payType: employeeForm.payType, dailyRate: dailyRate ?? undefined, hourlyRate: hourlyRate ?? undefined, biometricId: bio ?? undefined, locationId },
+          payload: { name: employeeForm.name.trim(), position: employeeForm.position.trim(), payType: employeeForm.payType, dailyRate: dailyRate ?? undefined, hourlyRate: hourlyRate ?? undefined, biometricId: bio ?? undefined, locationId, hiredAt: hiredAt ?? undefined },
         })
         employeeId = response.employee.id
       }
@@ -6627,6 +6660,58 @@ export function AppShellPage() {
       await refreshEmployees()
     } catch (error) {
       setEmployeesError(error instanceof Error ? error.message : 'No se pudo actualizar el empleado')
+    }
+  }
+
+  function openSettlement(emp: Employee) {
+    setSettlementEmployee(emp)
+    const suggested = emp.payType === 'HOURLY' ? (emp.hourlyRate ? emp.hourlyRate * 8 : 0) : emp.dailyRate || 0
+    setSettlementForm({ lastDay: getMexicoTodayDateInput(), dailySalary: suggested ? String(round2(suggested)) : '', mode: 'renuncia', pendingDays: '0' })
+    setSettlement(null)
+    setSettlementError('')
+    setSettlementCopied(false)
+  }
+  async function handleCalcSettlement() {
+    if (!token || !settlementEmployee) return
+    if (!settlementForm.lastDay || !settlementForm.dailySalary) {
+      setSettlementError('Captura el último día y el salario diario')
+      return
+    }
+    setLoadingSettlement(true)
+    setSettlementError('')
+    setSettlement(null)
+    try {
+      const result = await getSettlement({ token, employeeId: settlementEmployee.id, lastDay: settlementForm.lastDay, dailySalary: Number(settlementForm.dailySalary), mode: settlementForm.mode, pendingDays: Number(settlementForm.pendingDays) || 0 })
+      setSettlement(result)
+    } catch (error) {
+      setSettlementError(error instanceof Error ? error.message : 'No se pudo calcular el finiquito')
+    } finally {
+      setLoadingSettlement(false)
+    }
+  }
+  function buildSettlementText(s: Settlement) {
+    const lines: string[] = []
+    lines.push(`${s.mode === 'despido' ? 'LIQUIDACIÓN (despido)' : 'FINIQUITO (renuncia)'} — ${s.employee.name}`)
+    lines.push(`Ingreso: ${formatDateFromIsoString(s.hiredAt)}  ·  Último día: ${formatDateFromIsoString(s.lastDay)}`)
+    lines.push(`Antigüedad: ${s.antiguedad.label}`)
+    lines.push(`Salario diario: ${formatMoney(s.dailySalary)}`)
+    if (s.mode === 'despido') lines.push(`Salario diario integrado (SDI): ${formatMoney(s.dailySalaryIntegrated)}`)
+    lines.push('--------------------------------')
+    s.conceptos.forEach((c) => lines.push(`${c.label}${c.dias != null ? ` (${c.dias} días)` : ''}: ${formatMoney(c.monto)}`))
+    lines.push('--------------------------------')
+    lines.push(`TOTAL: ${formatMoney(s.total)}`)
+    lines.push('')
+    lines.push('Cálculo informativo basado en LFT — verifica con tu contador antes de liquidar.')
+    return lines.join('\n')
+  }
+  async function handleCopySettlement() {
+    if (!settlement) return
+    try {
+      await navigator.clipboard.writeText(buildSettlementText(settlement))
+      setSettlementCopied(true)
+      window.setTimeout(() => setSettlementCopied(false), 2000)
+    } catch {
+      setSettlementError('No se pudo copiar al portapapeles')
     }
   }
 
@@ -6894,15 +6979,21 @@ export function AppShellPage() {
               <input type="text" value={employeeForm.biometricId} onChange={(e) => setEmployeeForm((prev) => ({ ...prev, biometricId: e.target.value }))} />
             </label>
           </div>
-          <label className="q-field">
-            Sucursal
-            <select value={employeeForm.locationId} onChange={(e) => setEmployeeForm((prev) => ({ ...prev, locationId: e.target.value }))}>
-              <option value="ALL">Todas las sucursales</option>
-              {(selectedBusiness?.locations || []).map((location) => (
-                <option key={location.id} value={location.id}>{location.name}</option>
-              ))}
-            </select>
-          </label>
+          <div className="q-field-grid-2">
+            <label className="q-field">
+              Sucursal
+              <select value={employeeForm.locationId} onChange={(e) => setEmployeeForm((prev) => ({ ...prev, locationId: e.target.value }))}>
+                <option value="ALL">Todas las sucursales</option>
+                {(selectedBusiness?.locations || []).map((location) => (
+                  <option key={location.id} value={location.id}>{location.name}</option>
+                ))}
+              </select>
+            </label>
+            <label className="q-field">
+              Fecha de ingreso
+              <input type="date" value={employeeForm.hiredAt} onChange={(e) => setEmployeeForm((prev) => ({ ...prev, hiredAt: e.target.value }))} />
+            </label>
+          </div>
           <div className="q-field">
             Horario semanal (hora pactada de entrada · vacío = descansa)
             <div className="q-schedule-grid">
@@ -6956,7 +7047,16 @@ export function AppShellPage() {
             <tbody>
               {employees.map((emp) => (
                 <tr key={emp.id} className={emp.active ? '' : 'q-row-inactive'}>
-                  <td>{emp.name}</td>
+                  <td>
+                    <div className="q-table-turn">
+                      <strong>{emp.name}</strong>
+                      {emp.hiredAt ? (
+                        <span>Ingresó {formatDateFromIsoString(emp.hiredAt)}{formatAntiguedad(emp.hiredAt) ? ` · ${formatAntiguedad(emp.hiredAt)}` : ''}</span>
+                      ) : (
+                        <span className="q-table-muted">Sin fecha de ingreso</span>
+                      )}
+                    </div>
+                  </td>
                   <td>{emp.position} · <span className="q-table-muted">{formatPayType(emp.payType)}</span></td>
                   <td className="is-right q-mono">
                     {emp.payType === 'HOURLY'
@@ -6970,6 +7070,9 @@ export function AppShellPage() {
                     <td>
                       <div className="q-table-actions">
                         <button type="button" className="q-link-btn" onClick={() => openEditEmployee(emp)}>Editar</button>
+                        {canSeeSettlement ? (
+                          <button type="button" className="q-link-btn" onClick={() => openSettlement(emp)}>Finiquito</button>
+                        ) : null}
                         <button type="button" className={`q-link-btn ${emp.active ? 'q-link-danger' : ''}`} onClick={() => handleToggleEmployeeActive(emp)}>
                           {emp.active ? 'Desactivar' : 'Reactivar'}
                         </button>
@@ -7355,6 +7458,63 @@ export function AppShellPage() {
               <button type="button" className="q-btn q-btn-inline" disabled={periodActionBusy} onClick={handleClosePeriod}>{periodActionBusy ? 'Cerrando...' : 'Confirmar cierre'}</button>
               <button type="button" className="q-link-btn" onClick={() => setShowCloseConfirm(false)}>Cancelar</button>
             </div>
+          </section>
+        </div>
+      ) : null}
+
+      {settlementEmployee ? (
+        <div className="q-modal-overlay" role="presentation" onClick={() => setSettlementEmployee(null)}>
+          <section className="q-modal-card" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()} style={{ width: 'min(560px, 100%)' }}>
+            <header className="q-close-form-header">
+              <h2>Finiquito · {settlementEmployee.name}</h2>
+              <button type="button" className="q-link-btn" onClick={() => setSettlementEmployee(null)}>Cerrar</button>
+            </header>
+            {!settlementEmployee.hiredAt ? (
+              <p className="q-error-text">Este empleado no tiene fecha de ingreso. Captúrala primero en Editar.</p>
+            ) : null}
+            <div className="q-field-grid-2">
+              <label className="q-field">Último día<input type="date" value={settlementForm.lastDay} onChange={(e) => setSettlementForm((prev) => ({ ...prev, lastDay: e.target.value }))} /></label>
+              <label className="q-field">Tipo<select value={settlementForm.mode} onChange={(e) => setSettlementForm((prev) => ({ ...prev, mode: e.target.value as 'renuncia' | 'despido' }))}><option value="renuncia">Renuncia</option><option value="despido">Despido</option></select></label>
+            </div>
+            <div className="q-field-grid-2">
+              <label className="q-field">Salario diario<input type="number" min="0" step="0.01" value={settlementForm.dailySalary} onChange={(e) => setSettlementForm((prev) => ({ ...prev, dailySalary: e.target.value }))} /></label>
+              <label className="q-field">Días trabajados pendientes<input type="number" min="0" step="0.5" value={settlementForm.pendingDays} onChange={(e) => setSettlementForm((prev) => ({ ...prev, pendingDays: e.target.value }))} /></label>
+            </div>
+            {settlementEmployee.payType === 'HOURLY' ? (
+              <p className="q-table-muted">Sugerido: {settlementEmployee.hourlyRate != null ? `${formatMoney(settlementEmployee.hourlyRate)}/hr × 8h` : 'sin tarifa'}. Ajusta el salario diario si aplica.</p>
+            ) : null}
+            <div className="q-table-actions">
+              <button type="button" className="q-btn q-btn-inline" disabled={loadingSettlement || !settlementEmployee.hiredAt} onClick={handleCalcSettlement}>{loadingSettlement ? 'Calculando...' : 'Calcular'}</button>
+            </div>
+            {settlementError ? <p className="q-error-text">{settlementError}</p> : null}
+            {settlement ? (
+              <div className="q-ticket q-mono">
+                <div className="q-ticket-section">
+                  <p className="q-ticket-title">{settlement.mode === 'despido' ? 'Liquidación (despido)' : 'Finiquito (renuncia)'}</p>
+                  <div className="q-ticket-line"><span>Ingreso</span><span className="amt">{formatDateFromIsoString(settlement.hiredAt)}</span></div>
+                  <div className="q-ticket-line"><span>Antigüedad</span><span className="amt">{settlement.antiguedad.label}</span></div>
+                  <div className="q-ticket-line"><span>Salario diario</span><span className="amt">{formatMoney(settlement.dailySalary)}</span></div>
+                  {settlement.mode === 'despido' ? (
+                    <div className="q-ticket-line"><span>Salario diario integrado (SDI)</span><span className="amt">{formatMoney(settlement.dailySalaryIntegrated)}</span></div>
+                  ) : null}
+                  <div className="q-ticket-divider" />
+                  {settlement.conceptos.map((c) => (
+                    <div className="q-ticket-line" key={c.key}>
+                      <span>{c.label}{c.dias != null ? ` · ${c.dias} días` : ''}</span>
+                      <span className="amt">{formatMoney(c.monto)}</span>
+                    </div>
+                  ))}
+                </div>
+                <div className="q-payroll-total">
+                  <span>Total finiquito</span>
+                  <strong className="q-mono">{formatMoney(settlement.total)}</strong>
+                </div>
+                <div className="q-table-actions">
+                  <button type="button" className="q-btn q-btn-inline" onClick={handleCopySettlement}>{settlementCopied ? 'Copiado ✓' : 'Copiar desglose'}</button>
+                </div>
+              </div>
+            ) : null}
+            <p className="q-settlement-note">⚠️ Cálculo informativo basado en LFT — verifica con tu contador antes de liquidar.</p>
           </section>
         </div>
       ) : null}

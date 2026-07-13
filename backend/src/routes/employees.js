@@ -17,6 +17,7 @@ const createEmployeeSchema = z.object({
   hourlyRate: z.coerce.number().nonnegative().optional(),
   biometricId: z.string().trim().min(1).optional(),
   locationId: z.string().trim().min(1).optional(),
+  hiredAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   active: z.boolean().optional(),
 });
 
@@ -29,6 +30,7 @@ const updateEmployeeSchema = z
     hourlyRate: z.union([z.coerce.number().nonnegative(), z.null()]).optional(),
     biometricId: z.union([z.string().trim().min(1), z.null()]).optional(),
     locationId: z.union([z.string().trim().min(1), z.null()]).optional(),
+    hiredAt: z.union([z.string().regex(/^\d{4}-\d{2}-\d{2}$/), z.null()]).optional(),
     active: z.boolean().optional(),
   })
   .refine((data) => Object.keys(data).length > 0, {
@@ -151,7 +153,7 @@ function serializeEmployee(employee) {
     hourlyRate: employee.hourlyRate != null ? toMoney(employee.hourlyRate) : null,
     biometricId: employee.biometricId,
     active: employee.active,
-    hiredAt: employee.hiredAt,
+    hiredAt: employee.hiredAt ? new Date(employee.hiredAt).toISOString().slice(0, 10) : null,
     schedule: (employee.schedules || [])
       .map((entry) => ({ weekday: entry.weekday, startTime: entry.startTime }))
       .sort((a, b) => a.weekday - b.weekday),
@@ -195,6 +197,7 @@ employeesRouter.post(
           hourlyRate: typeof parsed.data.hourlyRate === 'number' ? toMoney(parsed.data.hourlyRate) : null,
           biometricId: parsed.data.biometricId || null,
           locationId: parsed.data.locationId || null,
+          hiredAt: parsed.data.hiredAt ? new Date(`${parsed.data.hiredAt}T00:00:00.000Z`) : null,
           active: parsed.data.active ?? true,
         },
       });
@@ -264,6 +267,7 @@ employeesRouter.patch(
       if (parsed.data.hourlyRate !== undefined) data.hourlyRate = parsed.data.hourlyRate === null ? null : toMoney(parsed.data.hourlyRate);
       if (parsed.data.biometricId !== undefined) data.biometricId = parsed.data.biometricId;
       if (parsed.data.locationId !== undefined) data.locationId = parsed.data.locationId;
+      if (parsed.data.hiredAt !== undefined) data.hiredAt = parsed.data.hiredAt ? new Date(`${parsed.data.hiredAt}T00:00:00.000Z`) : null;
       if (parsed.data.active !== undefined) data.active = parsed.data.active;
 
       const employee = await prisma.employee.update({ where: { id: employeeId }, data });
@@ -691,6 +695,173 @@ employeesRouter.put('/employees/:employeeId/schedule', authMiddleware, async (re
 
     const schedule = [...deduped.entries()].map(([weekday, startTime]) => ({ weekday, startTime })).sort((a, b) => a.weekday - b.weekday);
     res.status(200).json({ ok: true, schedule });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ============================================================
+// FINIQUITO / LIQUIDACIÓN (informativo, base LFT)
+// ============================================================
+
+const ownerAdminRoles = ['OWNER', 'ADMIN'];
+const MINIMUM_WAGE_DAILY = 278.8; // salario mínimo general 2025 (para documentar el tope de prima de antigüedad)
+
+function parseYmdUTC(value) {
+  const [y, m, d] = value.split('-').map(Number);
+  const date = new Date(Date.UTC(y, m - 1, d));
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function daysBetweenDates(from, to) {
+  return Math.round((to.getTime() - from.getTime()) / 86_400_000);
+}
+
+function exactAge(from, to) {
+  let years = to.getUTCFullYear() - from.getUTCFullYear();
+  let months = to.getUTCMonth() - from.getUTCMonth();
+  let days = to.getUTCDate() - from.getUTCDate();
+  if (days < 0) {
+    months -= 1;
+    const lastDayPrevMonth = new Date(Date.UTC(to.getUTCFullYear(), to.getUTCMonth(), 0)).getUTCDate();
+    days += lastDayPrevMonth;
+  }
+  if (months < 0) {
+    years -= 1;
+    months += 12;
+  }
+  return { years, months, days };
+}
+
+// Tabla LFT 2023: año1=12, +2/año hasta 20 (año5), luego +2 cada 5 años.
+function vacationDaysForYear(yearNumber) {
+  if (yearNumber < 1) return 0;
+  if (yearNumber <= 5) return 10 + yearNumber * 2;
+  return 20 + Math.ceil((yearNumber - 5) / 5) * 2;
+}
+
+employeesRouter.get('/employees/:employeeId/settlement', authMiddleware, async (req, res, next) => {
+  try {
+    const { employeeId } = req.params;
+    const { employee, membership } = await getMembershipForEmployee({ userId: req.userId, employeeId });
+    if (!employee) {
+      res.status(404).json({ ok: false, error: 'Empleado no encontrado' });
+      return;
+    }
+    if (!membership || membership.role !== 'OWNER') {
+      res.status(403).json({ ok: false, error: 'Solo el dueño (OWNER) puede calcular finiquitos' });
+      return;
+    }
+    if (!employee.hiredAt) {
+      res.status(400).json({ ok: false, error: 'El empleado no tiene fecha de ingreso capturada' });
+      return;
+    }
+
+    const lastDay = req.query.lastDay ? parseYmdUTC(String(req.query.lastDay)) : null;
+    const dailySalary = Number(req.query.dailySalary);
+    const mode = String(req.query.mode || 'renuncia');
+    const pendingDays = req.query.pendingDays != null ? Number(req.query.pendingDays) : 0;
+    if (!lastDay) {
+      res.status(400).json({ ok: false, error: 'lastDay debe ser YYYY-MM-DD' });
+      return;
+    }
+    if (!Number.isFinite(dailySalary) || dailySalary <= 0) {
+      res.status(400).json({ ok: false, error: 'dailySalary debe ser un número positivo' });
+      return;
+    }
+    if (!Number.isFinite(pendingDays) || pendingDays < 0) {
+      res.status(400).json({ ok: false, error: 'pendingDays debe ser un número no negativo' });
+      return;
+    }
+    if (mode !== 'renuncia' && mode !== 'despido') {
+      res.status(400).json({ ok: false, error: 'mode debe ser renuncia o despido' });
+      return;
+    }
+    const hired = parseYmdUTC(new Date(employee.hiredAt).toISOString().slice(0, 10));
+    if (lastDay.getTime() < hired.getTime()) {
+      res.status(400).json({ ok: false, error: 'lastDay no puede ser anterior a la fecha de ingreso' });
+      return;
+    }
+
+    const age = exactAge(hired, lastDay);
+    const totalDays = daysBetweenDates(hired, lastDay);
+    const yearsDecimal = totalDays / 365;
+
+    // Vacaciones proporcionales del año en curso
+    const currentYearNumber = age.years + 1;
+    const vacationDaysThisYear = vacationDaysForYear(currentYearNumber);
+    const anniversary = new Date(Date.UTC(hired.getUTCFullYear() + age.years, hired.getUTCMonth(), hired.getUTCDate()));
+    const daysSinceAnniv = daysBetweenDates(anniversary, lastDay);
+    const vacationDaysProp = vacationDaysThisYear * (daysSinceAnniv / 365);
+    const vacaciones = vacationDaysProp * dailySalary;
+    const primaVacacional = vacaciones * 0.25;
+
+    // Aguinaldo proporcional (año calendario)
+    const jan1 = new Date(Date.UTC(lastDay.getUTCFullYear(), 0, 1));
+    const startAguinaldo = hired.getTime() > jan1.getTime() ? hired : jan1;
+    const aguinaldoWorkedDays = daysBetweenDates(startAguinaldo, lastDay) + 1;
+    const aguinaldoDays = (aguinaldoWorkedDays / 365) * 15;
+    const aguinaldo = aguinaldoDays * dailySalary;
+
+    // Salario Diario Integrado (SDI): diario + factor aguinaldo (15/365) + factor prima vacacional
+    // (díasVacaciones × 25% / 365). Solo se usa para la indemnización por despido (90 y 20 días/año).
+    const integrationFactor = 1 + 15 / 365 + (vacationDaysThisYear * 0.25) / 365;
+    const dailyIntegrated = dailySalary * integrationFactor;
+
+    const conceptos = [];
+    if (pendingDays > 0) {
+      conceptos.push({ key: 'diasPendientes', label: 'Días trabajados pendientes de pago', dias: Number(pendingDays.toFixed(2)), monto: toMoney(pendingDays * dailySalary) });
+    }
+    conceptos.push(
+      { key: 'vacaciones', label: 'Vacaciones proporcionales', dias: Number(vacationDaysProp.toFixed(2)), monto: toMoney(vacaciones) },
+      { key: 'primaVacacional', label: 'Prima vacacional (25%)', monto: toMoney(primaVacacional) },
+      { key: 'aguinaldo', label: 'Aguinaldo proporcional', dias: Number(aguinaldoDays.toFixed(2)), monto: toMoney(aguinaldo) },
+    );
+    const assumptions = [
+      'Cálculo informativo basado en la LFT. Verifica con tu contador antes de liquidar.',
+      `Los conceptos "por año" se prorratean con la antigüedad exacta (${yearsDecimal.toFixed(3)} años).`,
+    ];
+
+    if (mode === 'despido') {
+      const indem90 = 90 * dailyIntegrated;
+      const veinteDiasDias = 20 * yearsDecimal;
+      const veinteDias = veinteDiasDias * dailyIntegrated;
+      const primaAntDias = 12 * yearsDecimal;
+      const primaAnt = primaAntDias * dailySalary;
+      conceptos.push(
+        { key: 'indem90', label: 'Indemnización 90 días (SDI)', dias: 90, monto: toMoney(indem90) },
+        { key: 'veinteDias', label: '20 días por año (SDI)', dias: Number(veinteDiasDias.toFixed(2)), monto: toMoney(veinteDias) },
+        { key: 'primaAntiguedad', label: 'Prima de antigüedad (12 días/año)', dias: Number(primaAntDias.toFixed(2)), monto: toMoney(primaAnt) },
+      );
+      assumptions.push(
+        `Indemnización (90 y 20 días/año) calculada con salario diario integrado (SDI) = diario × (1 + 15/365 + ${vacationDaysThisYear}×25%/365) = $${toMoney(dailyIntegrated)}.`,
+        `Prima de antigüedad calculada con el salario diario capturado ($${dailySalary}). La LFT la topa a 2 salarios mínimos (2 × $${MINIMUM_WAGE_DAILY} = $${(2 * MINIMUM_WAGE_DAILY).toFixed(2)}/día); si el salario diario excede ese tope, el monto real sería menor.`,
+      );
+    }
+
+    const total = toMoney(conceptos.reduce((sum, c) => sum + c.monto, 0));
+
+    res.status(200).json({
+      ok: true,
+      employee: { id: employee.id, name: employee.name, position: employee.position, payType: employee.payType },
+      hiredAt: new Date(employee.hiredAt).toISOString().slice(0, 10),
+      lastDay: String(req.query.lastDay),
+      mode,
+      dailySalary: toMoney(dailySalary),
+      dailySalaryIntegrated: toMoney(dailyIntegrated),
+      pendingDays: Number(pendingDays.toFixed(2)),
+      antiguedad: {
+        years: age.years,
+        months: age.months,
+        days: age.days,
+        label: `${age.years} año(s), ${age.months} mes(es), ${age.days} día(s)`,
+        totalDays,
+        yearsDecimal: Number(yearsDecimal.toFixed(3)),
+      },
+      conceptos,
+      total,
+      assumptions,
+    });
   } catch (error) {
     next(error);
   }
