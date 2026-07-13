@@ -1763,3 +1763,110 @@ body {
     grid-template-columns: repeat(4, 1fr);
   }
 }
+
+/* ---- Detalle de periodo: tabla compacta + ajustes al expandir ---- */
+.q-payroll-table {
+  min-width: 0; /* 7 columnas caben sin scroll en desktop */
+}
+
+.q-payroll-adj-flag {
+  font-size: 11px;
+  color: var(--verde);
+  font-weight: 700;
+  margin-left: 6px;
+}
+
+.q-payroll-expand {
+  display: grid;
+  gap: 14px;
+  padding: 12px 14px;
+}
+
+.q-payroll-adjustments {
+  display: grid;
+  gap: 10px;
+  border-top: 1px dashed var(--linea);
+  padding-top: 12px;
+}
+
+.q-adj-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+}
+
+.q-payroll-adjustments .q-field {
+  margin-bottom: 0;
+}
+
+.q-adj-grid input {
+  text-align: right;
+}
+
+/* Móvil: la tabla de periodo se apila como cards por empleado */
+@media (max-width: 720px) {
+  .q-adj-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .q-payroll-table {
+    min-width: 0;
+  }
+
+  .q-payroll-table thead {
+    display: none;
+  }
+
+  .q-payroll-table,
+  .q-payroll-table > tbody {
+    display: block;
+  }
+
+  .q-payroll-table tr.q-payroll-row {
+    display: block;
+    border: 1px solid var(--linea);
+    border-radius: 12px;
+    margin: 10px;
+    padding: 6px 10px;
+    background: var(--blanco);
+  }
+
+  .q-payroll-table tr.q-payroll-row td {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 12px;
+    border: none;
+    padding: 6px 2px;
+    text-align: right;
+  }
+
+  .q-payroll-table tr.q-payroll-row td::before {
+    content: attr(data-label);
+    color: var(--gris);
+    font-weight: 700;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .q-payroll-table tr.q-payroll-row td.q-payroll-name-cell {
+    justify-content: flex-start;
+    border-bottom: 1px solid var(--linea);
+    padding-bottom: 8px;
+    margin-bottom: 4px;
+  }
+
+  .q-payroll-table tr.q-payroll-name-cell::before {
+    content: none;
+  }
+
+  .q-payroll-table tr.q-closing-detail-row {
+    display: block;
+  }
+
+  .q-payroll-table tr.q-closing-detail-row td {
+    display: block;
+    padding: 0;
+  }
+}

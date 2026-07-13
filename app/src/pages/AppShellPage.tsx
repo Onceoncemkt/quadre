@@ -917,7 +917,7 @@ export function AppShellPage() {
   const [periodDetail, setPeriodDetail] = useState<{ period: PayrollPeriodItem; rows: PayrollRow[] } | null>(null)
   const [loadingPeriodDetail, setLoadingPeriodDetail] = useState(false)
   const [periodDetailError, setPeriodDetailError] = useState('')
-  const [entryEdits, setEntryEdits] = useState<Record<string, { overtimePay: string; bonuses: string; tips: string; deductions: string }>>({})
+  const [entryEdits, setEntryEdits] = useState<Record<string, { overtimePay: string; bonuses: string; tips: string; deductions: string; notes: string }>>({})
   const [savingEntryId, setSavingEntryId] = useState('')
   const [periodActionError, setPeriodActionError] = useState('')
   const [periodActionBusy, setPeriodActionBusy] = useState(false)
@@ -1718,13 +1718,14 @@ export function AppShellPage() {
     getPayrollPeriod({ token, periodId: selectedPeriodId })
       .then((response) => {
         setPeriodDetail(response)
-        const edits: Record<string, { overtimePay: string; bonuses: string; tips: string; deductions: string }> = {}
+        const edits: Record<string, { overtimePay: string; bonuses: string; tips: string; deductions: string; notes: string }> = {}
         response.rows.forEach((row) => {
           edits[row.employeeId] = {
             overtimePay: String(row.overtimePay || ''),
             bonuses: String(row.bonuses || ''),
             tips: String(row.tips || ''),
             deductions: String(row.deductions || ''),
+            notes: row.notes || '',
           }
         })
         setEntryEdits(edits)
@@ -6757,13 +6758,14 @@ export function AppShellPage() {
     if (!token || !selectedPeriodId) return
     const response = await getPayrollPeriod({ token, periodId: selectedPeriodId })
     setPeriodDetail(response)
-    const edits: Record<string, { overtimePay: string; bonuses: string; tips: string; deductions: string }> = {}
+    const edits: Record<string, { overtimePay: string; bonuses: string; tips: string; deductions: string; notes: string }> = {}
     response.rows.forEach((row) => {
       edits[row.employeeId] = {
         overtimePay: String(row.overtimePay || ''),
         bonuses: String(row.bonuses || ''),
         tips: String(row.tips || ''),
         deductions: String(row.deductions || ''),
+        notes: row.notes || '',
       }
     })
     setEntryEdits(edits)
@@ -6784,15 +6786,15 @@ export function AppShellPage() {
       setSavingPeriod(false)
     }
   }
-  function handleEntryEditChange(employeeId: string, field: 'overtimePay' | 'bonuses' | 'tips' | 'deductions', value: string) {
+  function handleEntryEditChange(employeeId: string, field: 'overtimePay' | 'bonuses' | 'tips' | 'deductions' | 'notes', value: string) {
     setEntryEdits((prev) => {
-      const current = prev[employeeId] || { overtimePay: '', bonuses: '', tips: '', deductions: '' }
+      const current = prev[employeeId] || { overtimePay: '', bonuses: '', tips: '', deductions: '', notes: '' }
       return { ...prev, [employeeId]: { ...current, [field]: value } }
     })
   }
   async function handleSaveEntry(employeeId: string) {
     if (!token || !selectedPeriodId) return
-    const edit = entryEdits[employeeId] || { overtimePay: '', bonuses: '', tips: '', deductions: '' }
+    const edit = entryEdits[employeeId] || { overtimePay: '', bonuses: '', tips: '', deductions: '', notes: '' }
     setSavingEntryId(employeeId)
     setPeriodActionError('')
     try {
@@ -6805,6 +6807,7 @@ export function AppShellPage() {
           bonuses: Number(edit.bonuses) || 0,
           tips: Number(edit.tips) || 0,
           deductions: Number(edit.deductions) || 0,
+          notes: edit.notes.trim() || null,
         },
       })
       await refreshPeriodDetail()
@@ -7062,10 +7065,13 @@ export function AppShellPage() {
       const bonuses = isClosed || !edit ? row.bonuses : Number(edit.bonuses) || 0
       const tips = isClosed || !edit ? row.tips : Number(edit.tips) || 0
       const deductions = isClosed || !edit ? row.deductions : Number(edit.deductions) || 0
+      const adjustments = round2(overtimePay + bonuses + tips - deductions)
+      const hasAdjustments = overtimePay > 0 || bonuses > 0 || tips > 0 || deductions > 0
       const total = round2(row.basePay + overtimePay + bonuses + tips - deductions - row.tardinessDiscount - row.noCheckFine)
-      return { ...row, overtimePay, bonuses, tips, deductions, total }
+      return { ...row, overtimePay, bonuses, tips, deductions, adjustments, hasAdjustments, total }
     })
     const previewTotal = round2(rows.reduce((sum, row) => sum + row.total, 0))
+    const editable = !isClosed && canManageEmployees
     return (
       <section className="q-card q-payroll-detail">
         <header className="q-section-header">
@@ -7084,98 +7090,95 @@ export function AppShellPage() {
                 <th>Empleado</th>
                 <th className="is-right">Días</th>
                 <th className="is-right">Horas</th>
-                <th className="is-right">Base</th>
-                <th className="is-right">Extras</th>
-                <th className="is-right">Bonos</th>
-                <th className="is-right">Propinas</th>
-                <th className="is-right">Deducc.</th>
                 <th className="is-right">Retardos</th>
                 <th className="is-right">No checó</th>
+                <th className="is-right">Base</th>
                 <th className="is-right">Total</th>
-                {!isClosed && canManageEmployees ? <th></th> : null}
               </tr>
             </thead>
             <tbody>
               {rows.map((row) => {
-                const edit = entryEdits[row.employeeId] || { overtimePay: '', bonuses: '', tips: '', deductions: '' }
+                const edit = entryEdits[row.employeeId] || { overtimePay: '', bonuses: '', tips: '', deductions: '', notes: '' }
                 const isRowExpanded = expandedPayrollRow === row.employeeId
                 return (
                   <Fragment key={row.employeeId}>
-                  <tr>
-                    <td>
+                  <tr className="q-payroll-row">
+                    <td className="q-payroll-name-cell">
                       <button type="button" className="q-link-btn" onClick={() => setExpandedPayrollRow((prev) => (prev === row.employeeId ? '' : row.employeeId))}>
                         {isRowExpanded ? '▾' : '▸'} {row.employee.name}
                       </button>
                     </td>
-                    <td className="is-right q-mono">{row.daysWorked}</td>
-                    <td className="is-right q-mono">{row.regularHours}</td>
-                    <td className="is-right q-mono">{formatMoney(row.basePay)}</td>
-                    {isClosed || !canManageEmployees ? (
-                      <>
-                        <td className="is-right q-mono">{formatMoney(row.overtimePay)}</td>
-                        <td className="is-right q-mono">{formatMoney(row.bonuses)}</td>
-                        <td className="is-right q-mono">{formatMoney(row.tips)}</td>
-                        <td className="is-right q-mono">{formatMoney(row.deductions)}</td>
-                      </>
-                    ) : (
-                      <>
-                        <td className="is-right"><input className="q-payroll-input q-mono" type="number" min="0" step="0.01" value={edit.overtimePay} onChange={(e) => handleEntryEditChange(row.employeeId, 'overtimePay', e.target.value)} /></td>
-                        <td className="is-right"><input className="q-payroll-input q-mono" type="number" min="0" step="0.01" value={edit.bonuses} onChange={(e) => handleEntryEditChange(row.employeeId, 'bonuses', e.target.value)} /></td>
-                        <td className="is-right"><input className="q-payroll-input q-mono" type="number" min="0" step="0.01" value={edit.tips} onChange={(e) => handleEntryEditChange(row.employeeId, 'tips', e.target.value)} /></td>
-                        <td className="is-right"><input className="q-payroll-input q-mono" type="number" min="0" step="0.01" value={edit.deductions} onChange={(e) => handleEntryEditChange(row.employeeId, 'deductions', e.target.value)} /></td>
-                      </>
-                    )}
-                    <td className="is-right q-mono">
+                    <td className="is-right q-mono" data-label="Días">{row.daysWorked}</td>
+                    <td className="is-right q-mono" data-label="Horas">{row.regularHours}</td>
+                    <td className="is-right q-mono" data-label="Retardos">
                       {row.tardinessMinutes > 0 ? (
                         <span className="q-error-text">{row.tardinessMinutes}min · −{formatMoney(row.tardinessDiscount)}</span>
                       ) : (
                         <span className="q-table-muted">—</span>
                       )}
                     </td>
-                    <td className="is-right q-mono">
+                    <td className="is-right q-mono" data-label="No checó">
                       {row.noCheckCount > 0 ? (
                         <span className="q-error-text">{row.noCheckCount}× · −{formatMoney(row.noCheckFine)}</span>
                       ) : (
                         <span className="q-table-muted">—</span>
                       )}
                     </td>
-                    <td className="is-right q-mono"><strong>{formatMoney(row.total)}</strong></td>
-                    {!isClosed && canManageEmployees ? (
-                      <td><button type="button" className="q-link-btn" disabled={savingEntryId === row.employeeId} onClick={() => handleSaveEntry(row.employeeId)}>{savingEntryId === row.employeeId ? '...' : 'Guardar'}</button></td>
-                    ) : null}
+                    <td className="is-right q-mono" data-label="Base">{formatMoney(row.basePay)}</td>
+                    <td className="is-right q-mono" data-label="Total">
+                      <strong>{formatMoney(row.total)}</strong>
+                      {row.hasAdjustments ? <span className="q-payroll-adj-flag" title={`Ajustes manuales: ${formatMoney(row.adjustments)}`}> +ajustes</span> : null}
+                    </td>
                   </tr>
                   {isRowExpanded ? (
                     <tr className="q-closing-detail-row">
-                      <td colSpan={isClosed || !canManageEmployees ? 11 : 12}>
-                        <div className="q-table-wrap">
-                          <table className="q-table q-payroll-days">
-                            <thead>
-                              <tr>
-                                <th>Día</th><th>Entrada</th><th>Salida</th><th>Pactada</th>
-                                <th className="is-right">Retardo</th><th className="is-right">Horas</th>
-                                <th className="is-right">Pago</th><th className="is-right">Descuento</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {row.days.length ? row.days.map((day) => (
-                                <tr key={day.date}>
-                                  <td>
-                                    {formatDayMonthFromIsoString(day.date)} <span className="q-table-muted">{formatWeekdayShort(day.date)}</span>
-                                    {day.missingPunch ? <span className="q-error-text"> · no checó {day.missingPunch.toLowerCase()}</span> : null}
-                                  </td>
-                                  <td className="q-mono">{day.clockInLabel || '—'}</td>
-                                  <td className="q-mono">{day.clockOutLabel || '—'}</td>
-                                  <td className="q-mono">{day.pactada || '—'}</td>
-                                  <td className="is-right q-mono">{day.tardinessMin > 0 ? <span className="q-error-text">{day.tardinessMin}min</span> : '—'}</td>
-                                  <td className="is-right q-mono">{day.hours}</td>
-                                  <td className="is-right q-mono">{formatMoney(day.dayPay)}</td>
-                                  <td className="is-right q-mono">{day.dayDiscount > 0 ? <span className="q-error-text">−{formatMoney(day.dayDiscount)}</span> : '—'}</td>
+                      <td colSpan={7}>
+                        <div className="q-payroll-expand">
+                          <div className="q-table-wrap">
+                            <table className="q-table q-payroll-days">
+                              <thead>
+                                <tr>
+                                  <th>Día</th><th>Entrada</th><th>Salida</th><th>Pactada</th>
+                                  <th className="is-right">Retardo</th><th className="is-right">Horas</th>
+                                  <th className="is-right">Pago</th><th className="is-right">Descuento</th>
                                 </tr>
-                              )) : (
-                                <tr><td colSpan={8} className="q-table-muted">Sin asistencia en el periodo</td></tr>
-                              )}
-                            </tbody>
-                          </table>
+                              </thead>
+                              <tbody>
+                                {row.days.length ? row.days.map((day) => (
+                                  <tr key={day.date}>
+                                    <td>
+                                      {formatDayMonthFromIsoString(day.date)} <span className="q-table-muted">{formatWeekdayShort(day.date)}</span>
+                                      {day.missingPunch ? <span className="q-error-text"> · no checó {day.missingPunch.toLowerCase()}</span> : null}
+                                    </td>
+                                    <td className="q-mono">{day.clockInLabel || '—'}</td>
+                                    <td className="q-mono">{day.clockOutLabel || '—'}</td>
+                                    <td className="q-mono">{day.pactada || '—'}</td>
+                                    <td className="is-right q-mono">{day.tardinessMin > 0 ? <span className="q-error-text">{day.tardinessMin}min</span> : '—'}</td>
+                                    <td className="is-right q-mono">{day.hours}</td>
+                                    <td className="is-right q-mono">{formatMoney(day.dayPay)}</td>
+                                    <td className="is-right q-mono">{day.dayDiscount > 0 ? <span className="q-error-text">−{formatMoney(day.dayDiscount)}</span> : '—'}</td>
+                                  </tr>
+                                )) : (
+                                  <tr><td colSpan={8} className="q-table-muted">Sin asistencia en el periodo</td></tr>
+                                )}
+                              </tbody>
+                            </table>
+                          </div>
+                          <div className="q-payroll-adjustments">
+                            <p className="q-ticket-title">Ajustes manuales</p>
+                            <div className="q-adj-grid">
+                              <label className="q-field">Extras{editable ? <input className="q-mono" type="number" min="0" step="0.01" value={edit.overtimePay} onChange={(e) => handleEntryEditChange(row.employeeId, 'overtimePay', e.target.value)} /> : <span className="q-mono">{formatMoney(row.overtimePay)}</span>}</label>
+                              <label className="q-field">Bonos{editable ? <input className="q-mono" type="number" min="0" step="0.01" value={edit.bonuses} onChange={(e) => handleEntryEditChange(row.employeeId, 'bonuses', e.target.value)} /> : <span className="q-mono">{formatMoney(row.bonuses)}</span>}</label>
+                              <label className="q-field">Propinas{editable ? <input className="q-mono" type="number" min="0" step="0.01" value={edit.tips} onChange={(e) => handleEntryEditChange(row.employeeId, 'tips', e.target.value)} /> : <span className="q-mono">{formatMoney(row.tips)}</span>}</label>
+                              <label className="q-field">Deducciones{editable ? <input className="q-mono" type="number" min="0" step="0.01" value={edit.deductions} onChange={(e) => handleEntryEditChange(row.employeeId, 'deductions', e.target.value)} /> : <span className="q-mono">{formatMoney(row.deductions)}</span>}</label>
+                            </div>
+                            <label className="q-field">Nota{editable ? <input type="text" value={edit.notes} onChange={(e) => handleEntryEditChange(row.employeeId, 'notes', e.target.value)} /> : <span className="q-table-muted">{row.notes || '—'}</span>}</label>
+                            {editable ? (
+                              <div className="q-table-actions">
+                                <button type="button" className="q-btn q-btn-inline" disabled={savingEntryId === row.employeeId} onClick={() => handleSaveEntry(row.employeeId)}>{savingEntryId === row.employeeId ? 'Guardando...' : 'Guardar ajustes'}</button>
+                              </div>
+                            ) : null}
+                          </div>
                         </div>
                       </td>
                     </tr>
