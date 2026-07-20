@@ -1,13 +1,20 @@
 const { Router } = require('express');
+const multer = require('multer');
 const { z } = require('zod');
 const { prisma } = require('../lib/prisma');
 const { authMiddleware } = require('../middleware/auth');
 const { requireRole } = require('../middleware/requireRole');
+const { parseChecadorPdfBuffer } = require('../services/checadorPdfParser');
 
 const employeesRouter = Router();
 
 const managerRoles = ['OWNER', 'ADMIN', 'MANAGER'];
 const payTypes = ['DAILY', 'HOURLY', 'FIXED'];
+const employeeStatuses = ['ACTIVO', 'INACTIVO'];
+const importInactivePolicies = ['IGNORE', 'REACTIVATE'];
+const DEFAULT_IMPORTED_HOURLY_RATE = 0;
+const DEFAULT_IMPORTED_POSITION = 'Por configurar';
+const IMPORT_INACTIVE_POLICY_DEFAULT = 'IGNORE';
 
 const createEmployeeSchema = z.object({
   name: z.string().trim().min(1),
@@ -19,6 +26,8 @@ const createEmployeeSchema = z.object({
   locationId: z.string().trim().min(1).optional(),
   hiredAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   active: z.boolean().optional(),
+  status: z.enum(employeeStatuses).optional(),
+  needsReview: z.boolean().optional(),
 });
 
 const updateEmployeeSchema = z
@@ -32,6 +41,9 @@ const updateEmployeeSchema = z
     locationId: z.union([z.string().trim().min(1), z.null()]).optional(),
     hiredAt: z.union([z.string().regex(/^\d{4}-\d{2}-\d{2}$/), z.null()]).optional(),
     active: z.boolean().optional(),
+    status: z.enum(employeeStatuses).optional(),
+    fechaBaja: z.union([z.string().regex(/^\d{4}-\d{2}-\d{2}$/), z.null()]).optional(),
+    needsReview: z.boolean().optional(),
   })
   .refine((data) => Object.keys(data).length > 0, {
     message: 'Debes enviar al menos un campo para actualizar',
@@ -55,19 +67,24 @@ const patchAttendanceSchema = z
     message: 'Debes enviar al menos un campo para actualizar',
   });
 
+const importAttendanceRowSchema = z
+  .object({
+    personId: z.string().trim().min(1).optional(),
+    biometricId: z.string().trim().min(1).optional(),
+    nombre: z.string().trim().optional(),
+    timestamp: z.string().trim().min(1),
+  })
+  .refine((row) => Boolean(row.personId || row.biometricId), {
+    message: 'Cada fila requiere personId o biometricId',
+  });
+
 const importAttendanceSchema = z.object({
   offsetHours: z.coerce.number().optional(),
-  rows: z
-    .array(
-      z.object({
-        biometricId: z.string().trim().min(1),
-        timestamp: z.string().trim().min(1),
-      }),
-    )
-    .min(1),
+  rows: z.array(importAttendanceRowSchema).min(1),
+  inactivePolicy: z.enum(importInactivePolicies).optional(),
 });
 
-const TARDINESS_MINUTES = 5; // hardcodeado por ahora (spec: configurable a futuro)
+const TARDINESS_MINUTES = 6; // hardcodeado por ahora (spec: configurable a futuro)
 
 function toMoney(value) {
   return Number(Number(value || 0).toFixed(2));
@@ -79,9 +96,34 @@ function parseDateTime(value) {
   return date;
 }
 
-// Una checada antes de las 06:00 MX se trata como SALIDA (cierre de turno nocturno),
+function parseDateOnlyToUtc(value) {
+  if (!value) return null;
+  const date = new Date(`${value}T00:00:00.000Z`);
+  if (Number.isNaN(date.getTime())) return null;
+  return date;
+}
+
+function normalizeEmployeeStatus({ status, active }) {
+  if (status === 'ACTIVO' || status === 'INACTIVO') return status;
+  if (active === false) return 'INACTIVO';
+  return 'ACTIVO';
+}
+
+function isEmployeeInactive(employee) {
+  return normalizeEmployeeStatus({ status: employee.status, active: employee.active }) === 'INACTIVO';
+}
+
+function isEmployeeActive(employee) {
+  return !isEmployeeInactive(employee);
+}
+
+function currentMxDateOnly() {
+  return new Date().toLocaleDateString('en-CA', { timeZone: 'America/Mexico_City' });
+}
+
+// Una checada entre 00:00 y 05:00 MX se trata como SALIDA (cierre de turno nocturno),
 // nunca como entrada de un turno nuevo.
-const MADRUGADA_CUTOFF_MIN = 6 * 60;
+const MADRUGADA_CUTOFF_MIN = 5 * 60;
 
 function mxClockMinutes(date) {
   const parts = new Intl.DateTimeFormat('en-GB', {
@@ -100,12 +142,364 @@ function mxClockMinutes(date) {
 function mxDayString(date) {
   return new Date(date).toLocaleDateString('en-CA', { timeZone: 'America/Mexico_City' });
 }
+function mxTimeString(date) {
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'America/Mexico_City',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(new Date(date));
+}
 
 function hoursBetween(clockIn, clockOut) {
   if (!clockIn || !clockOut) return 0;
   const ms = new Date(clockOut).getTime() - new Date(clockIn).getTime();
   if (!Number.isFinite(ms) || ms <= 0) return 0;
   return Number((ms / 3_600_000).toFixed(2));
+}
+
+const ALLOWED_IMPORT_MIMETYPES = new Set([
+  'text/csv',
+  'application/csv',
+  'application/vnd.ms-excel',
+  'text/plain',
+  'application/pdf',
+]);
+
+const importUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 12 * 1024 * 1024 },
+  fileFilter: (_req, file, callback) => {
+    const mimetype = String(file.mimetype || '').toLowerCase();
+    const byMime = ALLOWED_IMPORT_MIMETYPES.has(mimetype) || mimetype.includes('pdf');
+    const byExtension = /\.csv$/i.test(file.originalname || '') || /\.pdf$/i.test(file.originalname || '');
+    if (byMime || byExtension) {
+      callback(null, true);
+      return;
+    }
+    callback(new Error('Archivo inválido. Solo se aceptan CSV o PDF.'));
+  },
+});
+
+function importUploadSingle(req, res, next) {
+  importUpload.single('file')(req, res, (error) => {
+    if (error) {
+      res.status(400).json({ ok: false, error: error.message || 'Archivo inválido para importación' });
+      return;
+    }
+    next();
+  });
+}
+
+function parseOffsetHours(value) {
+  if (value === undefined || value === null || value === '') return 0;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function isPdfUpload(file) {
+  const mimetype = String(file?.mimetype || '').toLowerCase().trim();
+  const originalname = String(file?.originalname || '').toLowerCase().trim();
+  return mimetype.includes('pdf') || /\.pdf$/i.test(originalname);
+}
+
+function parseInactivePolicy(value) {
+  if (value === undefined || value === null || value === '') return IMPORT_INACTIVE_POLICY_DEFAULT;
+  const normalized = String(value).toUpperCase().trim();
+  if (!importInactivePolicies.includes(normalized)) return null;
+  return normalized;
+}
+
+function normalizeImportRows(rows) {
+  return rows
+    .map((row) => ({
+      personId: String(row.personId || row.biometricId || '')
+        .trim(),
+      nombre: String(row.nombre || '')
+        .replace(/\s+/g, ' ')
+        .trim(),
+      timestamp: String(row.timestamp || '').trim(),
+    }))
+    .filter((row) => row.personId && row.timestamp);
+}
+
+function parseChecadorCsvBuffer(buffer) {
+  const text = String(buffer.toString('utf8') || '').replace(/^\uFEFF/, '');
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (!lines.length) {
+    throw new Error('El archivo está vacío');
+  }
+  const delimiter = lines[0].includes(';') && !lines[0].includes(',') ? ';' : ',';
+  const cells = lines.map((line) => line.split(delimiter).map((value) => value.trim().replace(/^"|"$/g, '')));
+  const header = cells[0].map((cell) => cell.toLowerCase());
+  let idIndex = header.findIndex((value) => /person\s*id|id|biomet|emplead|user|clave/.test(value));
+  let timestampIndex = header.findIndex((value) => /time|fecha|hora|stamp|date|check/.test(value));
+  let nameIndex = header.findIndex((value) => /name|nombre/.test(value));
+  let dataRows = cells.slice(1);
+  if (idIndex === -1 || timestampIndex === -1) {
+    idIndex = 0;
+    timestampIndex = 1;
+    nameIndex = cells[0].length > 2 ? 2 : -1;
+    dataRows = cells;
+  }
+  const rows = dataRows.map((row) => ({
+    personId: row[idIndex],
+    nombre: nameIndex >= 0 ? row[nameIndex] || '' : '',
+    timestamp: row[timestampIndex],
+  }));
+  const normalized = normalizeImportRows(rows);
+  if (!normalized.length) {
+    throw new Error('No se detectaron filas con personId y timestamp');
+  }
+  return normalized;
+}
+
+async function resolveImportPayload(req) {
+  const offsetHours = parseOffsetHours(req.body?.offsetHours);
+  if (offsetHours === null) {
+    return { ok: false, status: 400, error: 'offsetHours inválido' };
+  }
+  const inactivePolicy = parseInactivePolicy(req.body?.inactivePolicy);
+  if (!inactivePolicy) {
+    return { ok: false, status: 400, error: 'inactivePolicy inválido' };
+  }
+  if (req.file) {
+    try {
+      const fileRows = isPdfUpload(req.file)
+        ? await parseChecadorPdfBuffer(req.file.buffer)
+        : parseChecadorCsvBuffer(req.file.buffer);
+      const normalizedRows = normalizeImportRows(fileRows);
+      if (!normalizedRows.length) {
+        return { ok: false, status: 400, error: 'No se detectaron filas válidas en el archivo' };
+      }
+      return { ok: true, rows: normalizedRows, offsetHours, inactivePolicy };
+    } catch (error) {
+      return { ok: false, status: 400, error: error instanceof Error ? error.message : 'No se pudo parsear el archivo' };
+    }
+  }
+  const parsed = importAttendanceSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return { ok: false, status: 400, error: 'Payload inválido', details: parsed.error.flatten() };
+  }
+  return {
+    ok: true,
+    rows: normalizeImportRows(parsed.data.rows),
+    offsetHours: parsed.data.offsetHours || 0,
+    inactivePolicy: parseInactivePolicy(parsed.data.inactivePolicy) || IMPORT_INACTIVE_POLICY_DEFAULT,
+  };
+}
+
+function nameFromImportRow(row) {
+  const normalized = String(row?.nombre || '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (normalized) return normalized;
+  return `Empleado ${row.personId}`;
+}
+
+function buildNameByPersonId(rows) {
+  const names = new Map();
+  rows.forEach((row) => {
+    if (!names.has(row.personId)) names.set(row.personId, nameFromImportRow(row));
+  });
+  return names;
+}
+
+async function prepareEmployeesForImport({ businessId, locationId, rows, inactivePolicy, applyMutations }) {
+  const personIds = [...new Set(rows.map((row) => row.personId).filter(Boolean))];
+  if (!personIds.length) {
+    return {
+      employeeByPersonId: new Map(),
+      newPersonIds: new Set(),
+      inactivePersonIds: new Set(),
+      createdCount: 0,
+      reactivatedCount: 0,
+    };
+  }
+  const existingEmployees = await prisma.employee.findMany({
+    where: { businessId, biometricId: { in: personIds } },
+    select: { id: true, name: true, biometricId: true, status: true, active: true, needsReview: true },
+    orderBy: [{ createdAt: 'asc' }],
+  });
+  const existingByPersonId = new Map();
+  existingEmployees.forEach((employee) => {
+    if (!employee.biometricId) return;
+    if (!existingByPersonId.has(employee.biometricId)) existingByPersonId.set(employee.biometricId, employee);
+  });
+
+  const newPersonIds = new Set(personIds.filter((personId) => !existingByPersonId.has(personId)));
+  let createdCount = 0;
+  if (applyMutations && newPersonIds.size) {
+    const namesByPersonId = buildNameByPersonId(rows);
+    await prisma.employee.createMany({
+      data: [...newPersonIds].map((personId) => ({
+        businessId,
+        locationId,
+        name: namesByPersonId.get(personId) || `Empleado ${personId}`,
+        position: DEFAULT_IMPORTED_POSITION,
+        payType: 'HOURLY',
+        hourlyRate: toMoney(DEFAULT_IMPORTED_HOURLY_RATE),
+        biometricId: personId,
+        status: 'ACTIVO',
+        active: true,
+        needsReview: true,
+      })),
+    });
+    createdCount = newPersonIds.size;
+  }
+
+  let currentEmployees = existingEmployees;
+  if (applyMutations && newPersonIds.size) {
+    currentEmployees = await prisma.employee.findMany({
+      where: { businessId, biometricId: { in: personIds } },
+      select: { id: true, name: true, biometricId: true, status: true, active: true, needsReview: true },
+      orderBy: [{ createdAt: 'asc' }],
+    });
+  }
+  const byPersonId = new Map();
+  currentEmployees.forEach((employee) => {
+    if (!employee.biometricId) return;
+    if (!byPersonId.has(employee.biometricId)) byPersonId.set(employee.biometricId, employee);
+  });
+
+  const inactiveBefore = [...byPersonId.entries()]
+    .filter(([, employee]) => isEmployeeInactive(employee))
+    .map(([personId]) => personId);
+  let reactivatedCount = 0;
+  if (applyMutations && inactivePolicy === 'REACTIVATE' && inactiveBefore.length) {
+    await prisma.employee.updateMany({
+      where: { businessId, biometricId: { in: inactiveBefore } },
+      data: { status: 'ACTIVO', active: true, fechaBaja: null },
+    });
+    reactivatedCount = inactiveBefore.length;
+    const refreshed = await prisma.employee.findMany({
+      where: { businessId, biometricId: { in: personIds } },
+      select: { id: true, name: true, biometricId: true, status: true, active: true, needsReview: true },
+      orderBy: [{ createdAt: 'asc' }],
+    });
+    byPersonId.clear();
+    refreshed.forEach((employee) => {
+      if (!employee.biometricId) return;
+      if (!byPersonId.has(employee.biometricId)) byPersonId.set(employee.biometricId, employee);
+    });
+  }
+
+  const inactivePersonIds = new Set(
+    [...byPersonId.entries()].filter(([, employee]) => isEmployeeInactive(employee)).map(([personId]) => personId),
+  );
+  return {
+    employeeByPersonId: byPersonId,
+    newPersonIds,
+    inactivePersonIds,
+    createdCount,
+    reactivatedCount,
+  };
+}
+
+function buildImportPreview({ rows, employeeByPersonId, newPersonIds, inactivePersonIds, offsetMs }) {
+  const previewRows = [];
+  const countByPersonId = new Map();
+  const inactiveWarnings = new Set();
+  for (const row of rows) {
+    const raw = parseDateTime(row.timestamp);
+    if (!raw) continue;
+    const adjusted = new Date(raw.getTime() + offsetMs);
+    const employee = employeeByPersonId.get(row.personId) || null;
+    const isNewEmployee = newPersonIds.has(row.personId);
+    const isInactiveEmployee = inactivePersonIds.has(row.personId);
+    const empleado = employee ? employee.name : nameFromImportRow(row);
+    if (isInactiveEmployee) inactiveWarnings.add(empleado);
+    previewRows.push({
+      personId: row.personId,
+      nombre: row.nombre || '',
+      timestamp: adjusted.toISOString(),
+      empleado,
+      fecha: mxDayString(adjusted),
+      hora: mxTimeString(adjusted),
+      isNewEmployee,
+      isInactiveEmployee,
+      warning: isInactiveEmployee ? 'checadas de empleado dado de baja' : null,
+      needsReview: Boolean(employee?.needsReview || isNewEmployee),
+      employeeId: employee ? employee.id : null,
+    });
+    const current = countByPersonId.get(row.personId) || {
+      personId: row.personId,
+      empleado,
+      count: 0,
+      isNewEmployee,
+      isInactiveEmployee,
+    };
+    current.count += 1;
+    current.isNewEmployee = current.isNewEmployee || isNewEmployee;
+    current.isInactiveEmployee = current.isInactiveEmployee || isInactiveEmployee;
+    countByPersonId.set(row.personId, current);
+  }
+  const countsByEmployee = [...countByPersonId.values()].sort((a, b) => a.empleado.localeCompare(b.empleado));
+  const warnings = [...inactiveWarnings].map((name) => `checadas de empleado dado de baja: ${name}`);
+  return { previewRows, countsByEmployee, warnings };
+}
+
+function collectEmployeeStamps({ rows, employeeByPersonId, offsetMs, inactivePolicy }) {
+  const stampsByEmployee = new Map(); // employeeId -> [Date...]
+  const sinEmpleado = new Set();
+  const ignoredInactive = new Set();
+  let ignoredInactiveRows = 0;
+  for (const row of rows) {
+    const raw = parseDateTime(row.timestamp);
+    if (!raw) continue;
+    const employee = employeeByPersonId.get(row.personId) || null;
+    if (!employee) {
+      sinEmpleado.add(row.personId);
+      continue;
+    }
+    if (isEmployeeInactive(employee) && inactivePolicy === 'IGNORE') {
+      ignoredInactive.add(row.personId);
+      ignoredInactiveRows += 1;
+      continue;
+    }
+    const adjusted = new Date(raw.getTime() + offsetMs);
+    if (!stampsByEmployee.has(employee.id)) stampsByEmployee.set(employee.id, []);
+    stampsByEmployee.get(employee.id).push(adjusted);
+  }
+  return { stampsByEmployee, sinEmpleado, ignoredInactive, ignoredInactiveRows };
+}
+
+function buildAttendancePlan(stampsByEmployee) {
+  const planned = []; // { employeeId, clockIn: Date, clockOut: Date|null }
+  for (const [employeeId, stamps] of stampsByEmployee.entries()) {
+    stamps.sort((a, b) => a.getTime() - b.getTime());
+    const byDay = new Map();
+    for (const stamp of stamps) {
+      const day = mxDayString(stamp);
+      if (!byDay.has(day)) byDay.set(day, []);
+      byDay.get(day).push(stamp);
+    }
+    let carryOrphanIn = null;
+    for (const day of [...byDay.keys()].sort()) {
+      const dayStamps = byDay.get(day);
+      let idx = 0;
+      if (carryOrphanIn !== null) {
+        if (dayStamps.length && mxClockMinutes(dayStamps[0]) <= MADRUGADA_CUTOFF_MIN) {
+          planned.push({ employeeId, clockIn: carryOrphanIn, clockOut: dayStamps[0] });
+          idx = 1;
+        } else {
+          planned.push({ employeeId, clockIn: carryOrphanIn, clockOut: null });
+        }
+        carryOrphanIn = null;
+      }
+      while (idx < dayStamps.length && mxClockMinutes(dayStamps[idx]) <= MADRUGADA_CUTOFF_MIN) idx += 1;
+      const rest = dayStamps.slice(idx);
+      for (let i = 0; i < rest.length; i += 2) {
+        if (i + 1 < rest.length) planned.push({ employeeId, clockIn: rest[i], clockOut: rest[i + 1] });
+        else carryOrphanIn = rest[i];
+      }
+    }
+    if (carryOrphanIn !== null) planned.push({ employeeId, clockIn: carryOrphanIn, clockOut: null });
+  }
+  return planned;
 }
 
 async function getMembershipForLocation({ userId, locationId }) {
@@ -142,17 +536,21 @@ async function getMembershipForAttendance({ userId, attendanceId }) {
 }
 
 function serializeEmployee(employee) {
+  const status = normalizeEmployeeStatus({ status: employee.status, active: employee.active });
   return {
     id: employee.id,
     businessId: employee.businessId,
     locationId: employee.locationId,
     name: employee.name,
     position: employee.position,
+    status,
+    fechaBaja: employee.fechaBaja ? mxDayString(employee.fechaBaja) : null,
     payType: employee.payType,
     dailyRate: employee.dailyRate != null ? toMoney(employee.dailyRate) : null,
     hourlyRate: employee.hourlyRate != null ? toMoney(employee.hourlyRate) : null,
+    needsReview: Boolean(employee.needsReview),
     biometricId: employee.biometricId,
-    active: employee.active,
+    active: status === 'ACTIVO',
     hiredAt: employee.hiredAt ? new Date(employee.hiredAt).toISOString().slice(0, 10) : null,
     schedule: (employee.schedules || [])
       .map((entry) => ({ weekday: entry.weekday, startTime: entry.startTime }))
@@ -192,13 +590,16 @@ employeesRouter.post(
           businessId,
           name: parsed.data.name,
           position: parsed.data.position,
+          status: normalizeEmployeeStatus({ status: parsed.data.status, active: parsed.data.active }),
+          fechaBaja: normalizeEmployeeStatus({ status: parsed.data.status, active: parsed.data.active }) === 'INACTIVO' ? parseDateOnlyToUtc(currentMxDateOnly()) : null,
           payType: parsed.data.payType || 'DAILY',
           dailyRate: typeof parsed.data.dailyRate === 'number' ? toMoney(parsed.data.dailyRate) : null,
           hourlyRate: typeof parsed.data.hourlyRate === 'number' ? toMoney(parsed.data.hourlyRate) : null,
+          needsReview: Boolean(parsed.data.needsReview),
           biometricId: parsed.data.biometricId || null,
           locationId: parsed.data.locationId || null,
           hiredAt: parsed.data.hiredAt ? new Date(`${parsed.data.hiredAt}T00:00:00.000Z`) : null,
-          active: parsed.data.active ?? true,
+          active: normalizeEmployeeStatus({ status: parsed.data.status, active: parsed.data.active }) === 'ACTIVO',
         },
       });
       res.status(201).json({ ok: true, employee: serializeEmployee(employee) });
@@ -217,9 +618,9 @@ employeesRouter.get(
       const { businessId } = req.params;
       const includeInactive = req.query.includeInactive === 'true';
       const employees = await prisma.employee.findMany({
-        where: { businessId, ...(includeInactive ? {} : { active: true }) },
+        where: { businessId, ...(includeInactive ? {} : { status: 'ACTIVO', active: true }) },
         include: { schedules: true },
-        orderBy: [{ active: 'desc' }, { name: 'asc' }],
+        orderBy: [{ status: 'asc' }, { name: 'asc' }],
       });
       res.status(200).json({ ok: true, items: employees.map(serializeEmployee) });
     } catch (error) {
@@ -260,6 +661,11 @@ employeesRouter.patch(
       }
 
       const data = {};
+      const statusFromPayload = parsed.data.status !== undefined
+        ? parsed.data.status
+        : parsed.data.active !== undefined
+          ? (parsed.data.active ? 'ACTIVO' : 'INACTIVO')
+          : undefined;
       if (parsed.data.name !== undefined) data.name = parsed.data.name;
       if (parsed.data.position !== undefined) data.position = parsed.data.position;
       if (parsed.data.payType !== undefined) data.payType = parsed.data.payType;
@@ -268,7 +674,18 @@ employeesRouter.patch(
       if (parsed.data.biometricId !== undefined) data.biometricId = parsed.data.biometricId;
       if (parsed.data.locationId !== undefined) data.locationId = parsed.data.locationId;
       if (parsed.data.hiredAt !== undefined) data.hiredAt = parsed.data.hiredAt ? new Date(`${parsed.data.hiredAt}T00:00:00.000Z`) : null;
-      if (parsed.data.active !== undefined) data.active = parsed.data.active;
+      if (statusFromPayload !== undefined) {
+        data.status = statusFromPayload;
+        data.active = statusFromPayload === 'ACTIVO';
+        data.fechaBaja = statusFromPayload === 'INACTIVO'
+          ? (parsed.data.fechaBaja ? parseDateOnlyToUtc(parsed.data.fechaBaja) : parseDateOnlyToUtc(currentMxDateOnly()))
+          : null;
+      } else if (parsed.data.fechaBaja !== undefined) {
+        data.fechaBaja = parsed.data.fechaBaja ? parseDateOnlyToUtc(parsed.data.fechaBaja) : null;
+      }
+      if (parsed.data.needsReview !== undefined) data.needsReview = parsed.data.needsReview;
+      if (parsed.data.hourlyRate !== undefined && parsed.data.hourlyRate !== null && Number(parsed.data.hourlyRate) > 0) data.needsReview = false;
+      if (parsed.data.dailyRate !== undefined && parsed.data.dailyRate !== null && Number(parsed.data.dailyRate) > 0) data.needsReview = false;
 
       const employee = await prisma.employee.update({ where: { id: employeeId }, data });
       res.status(200).json({ ok: true, employee: serializeEmployee(employee) });
@@ -287,24 +704,26 @@ employeesRouter.delete(
       const { businessId, employeeId } = req.params;
       const existing = await prisma.employee.findUnique({
         where: { id: employeeId },
-        select: { id: true, businessId: true, _count: { select: { attendance: true, payrollEntries: true } } },
+        select: { id: true, businessId: true, status: true, active: true },
       });
       if (!existing || existing.businessId !== businessId) {
         res.status(404).json({ ok: false, error: 'Empleado no encontrado para este negocio' });
         return;
       }
-      const hasHistory = Boolean(existing._count.attendance + existing._count.payrollEntries);
-      if (!hasHistory) {
-        await prisma.employee.delete({ where: { id: employeeId } });
-        res.status(200).json({ ok: true, deleted: true, deactivated: false, message: 'Empleado eliminado' });
+      if (isEmployeeInactive(existing)) {
+        res.status(200).json({ ok: true, deleted: false, deactivated: true, message: 'El empleado ya estaba dado de baja' });
         return;
       }
-      await prisma.employee.update({ where: { id: employeeId }, data: { active: false } });
+      const fechaBaja = parseDateOnlyToUtc(currentMxDateOnly()) || new Date();
+      await prisma.employee.update({
+        where: { id: employeeId },
+        data: { status: 'INACTIVO', active: false, fechaBaja },
+      });
       res.status(200).json({
         ok: true,
         deleted: false,
         deactivated: true,
-        message: 'Se desactivó porque tiene asistencia o nómina — conserva su historial',
+        message: 'Empleado dado de baja (conserva historial)',
       });
     } catch (error) {
       next(error);
@@ -470,7 +889,7 @@ employeesRouter.get('/locations/:locationId/attendance', authMiddleware, async (
     // Empleados de esta sucursal o sin sucursal asignada (aplican a todas).
     const employees = await prisma.employee.findMany({
       where: { businessId: location.businessId, OR: [{ locationId }, { locationId: null }] },
-      orderBy: [{ active: 'desc' }, { name: 'asc' }],
+      orderBy: [{ status: 'asc' }, { name: 'asc' }],
     });
     const employeeIds = employees.map((e) => e.id);
 
@@ -527,8 +946,62 @@ employeesRouter.get('/locations/:locationId/attendance', authMiddleware, async (
 // ============================================================
 // IMPORT DEL CHECADOR
 // ============================================================
+employeesRouter.post('/locations/:locationId/attendance/import/preview', authMiddleware, importUploadSingle, async (req, res, next) => {
+  try {
+    const { locationId } = req.params;
+    const { location, membership } = await getMembershipForLocation({ userId: req.userId, locationId });
+    if (!location) {
+      res.status(404).json({ ok: false, error: 'Sucursal no encontrada' });
+      return;
+    }
+    if (!membership || !managerRoles.includes(membership.role)) {
+      res.status(403).json({ ok: false, error: 'No autorizado para previsualizar checadas' });
+      return;
+    }
+    const payload = await resolveImportPayload(req);
+    if (!payload.ok) {
+      res.status(payload.status || 400).json({ ok: false, error: payload.error, ...(payload.details ? { details: payload.details } : {}) });
+      return;
+    }
+    const { rows, offsetHours, inactivePolicy } = payload;
+    const offsetMs = offsetHours * 3_600_000;
+    const importContext = await prepareEmployeesForImport({
+      businessId: location.businessId,
+      locationId: location.id,
+      rows,
+      inactivePolicy,
+      applyMutations: false,
+    });
+    const { previewRows, countsByEmployee, warnings } = buildImportPreview({
+      rows,
+      employeeByPersonId: importContext.employeeByPersonId,
+      newPersonIds: importContext.newPersonIds,
+      inactivePersonIds: importContext.inactivePersonIds,
+      offsetMs,
+    });
+    if (!previewRows.length) {
+      res.status(400).json({ ok: false, error: 'No se detectaron timestamps válidos para previsualizar' });
+      return;
+    }
+    previewRows.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+    res.status(200).json({
+      ok: true,
+      offsetHours,
+      inactivePolicy,
+      rows,
+      previewRows: previewRows.map(({ employeeId, ...row }) => row),
+      countsByEmployee,
+      sinEmpleado: [],
+      warnings,
+      nuevos: [...importContext.newPersonIds],
+      inactivos: [...importContext.inactivePersonIds],
+    });
+  } catch (error) {
+    next(error);
+  }
+});
 
-employeesRouter.post('/locations/:locationId/attendance/import', authMiddleware, async (req, res, next) => {
+employeesRouter.post('/locations/:locationId/attendance/import', authMiddleware, importUploadSingle, async (req, res, next) => {
   try {
     const { locationId } = req.params;
     const { location, membership } = await getMembershipForLocation({ userId: req.userId, locationId });
@@ -540,76 +1013,35 @@ employeesRouter.post('/locations/:locationId/attendance/import', authMiddleware,
       res.status(403).json({ ok: false, error: 'No autorizado para importar checadas' });
       return;
     }
-    const parsed = importAttendanceSchema.safeParse(req.body);
-    if (!parsed.success) {
-      res.status(400).json({ ok: false, error: 'Payload inválido', details: parsed.error.flatten() });
+    const payload = await resolveImportPayload(req);
+    if (!payload.ok) {
+      res.status(payload.status || 400).json({ ok: false, error: payload.error, ...(payload.details ? { details: payload.details } : {}) });
       return;
     }
-    const offsetHours = parsed.data.offsetHours || 0;
+    const { rows, offsetHours, inactivePolicy } = payload;
     const offsetMs = offsetHours * 3_600_000;
-
-    // Empleados del negocio con biometricId → map de matcheo.
-    const employees = await prisma.employee.findMany({
-      where: { businessId: location.businessId, biometricId: { not: null } },
-      select: { id: true, biometricId: true },
+    const importContext = await prepareEmployeesForImport({
+      businessId: location.businessId,
+      locationId: location.id,
+      rows,
+      inactivePolicy,
+      applyMutations: true,
     });
-    const empByBiometric = new Map(employees.map((e) => [e.biometricId, e.id]));
-
-    // Agrupa checadas válidas por empleado, aplicando offset.
-    const stampsByEmployee = new Map(); // employeeId -> [Date...]
-    const sinEmpleado = new Set();
-    for (const row of parsed.data.rows) {
-      const employeeId = empByBiometric.get(row.biometricId);
-      if (!employeeId) {
-        sinEmpleado.add(row.biometricId);
-        continue;
-      }
-      const raw = parseDateTime(row.timestamp);
-      if (!raw) continue; // timestamp basura → se ignora
-      const adjusted = new Date(raw.getTime() + offsetMs);
-      if (!stampsByEmployee.has(employeeId)) stampsByEmployee.set(employeeId, []);
-      stampsByEmployee.get(employeeId).push(adjusted);
+    const { stampsByEmployee, sinEmpleado, ignoredInactive, ignoredInactiveRows } = collectEmployeeStamps({
+      rows,
+      employeeByPersonId: importContext.employeeByPersonId,
+      offsetMs,
+      inactivePolicy,
+    });
+    if (!stampsByEmployee.size && !ignoredInactiveRows) {
+      res.status(400).json({ ok: false, error: 'No se detectaron timestamps válidos para importar' });
+      return;
     }
 
-    // Emparejamiento greedy ACOTADO POR DÍA (un punzado faltante solo afecta ese día),
-    // con cruce de medianoche: si un día cierra con entrada huérfana, la primera checada
-    // de madrugada (< 06:00) del día siguiente la cierra (turno nocturno). Una checada de
-    // madrugada sin turno abierto es una salida huérfana → se descarta (no abre día nuevo).
-    // El día del turno se deriva luego del clockIn.
-    const planned = []; // { employeeId, clockIn: Date, clockOut: Date|null }
-    for (const [employeeId, stamps] of stampsByEmployee.entries()) {
-      stamps.sort((a, b) => a.getTime() - b.getTime());
-      const byDay = new Map();
-      for (const stamp of stamps) {
-        const day = mxDayString(stamp);
-        if (!byDay.has(day)) byDay.set(day, []);
-        byDay.get(day).push(stamp);
-      }
-      let carryOrphanIn = null;
-      for (const day of [...byDay.keys()].sort()) {
-        const dayStamps = byDay.get(day);
-        let idx = 0;
-        // 1) cerrar la huérfana del día anterior con una madrugada líder
-        if (carryOrphanIn !== null) {
-          if (dayStamps.length && mxClockMinutes(dayStamps[0]) < MADRUGADA_CUTOFF_MIN) {
-            planned.push({ employeeId, clockIn: carryOrphanIn, clockOut: dayStamps[0] });
-            idx = 1;
-          } else {
-            planned.push({ employeeId, clockIn: carryOrphanIn, clockOut: null });
-          }
-          carryOrphanIn = null;
-        }
-        // 2) descartar madrugadas líderes sobrantes (salidas huérfanas)
-        while (idx < dayStamps.length && mxClockMinutes(dayStamps[idx]) < MADRUGADA_CUTOFF_MIN) idx += 1;
-        // 3) greedy dentro del día; huérfana final → se lleva al día siguiente
-        const rest = dayStamps.slice(idx);
-        for (let i = 0; i < rest.length; i += 2) {
-          if (i + 1 < rest.length) planned.push({ employeeId, clockIn: rest[i], clockOut: rest[i + 1] });
-          else carryOrphanIn = rest[i];
-        }
-      }
-      if (carryOrphanIn !== null) planned.push({ employeeId, clockIn: carryOrphanIn, clockOut: null });
-    }
+    // Emparejamiento greedy ACOTADO POR DÍA (un punzado faltante solo afecta ese día).
+    // Si un día cierra con entrada huérfana, una checada entre 00:00 y 05:00 del día
+    // siguiente se usa como salida de ese turno nocturno.
+    const planned = buildAttendancePlan(stampsByEmployee);
 
     // Idempotencia: mismo empleado + mismo clockIn exacto → skip.
     const involvedIds = [...new Set(planned.map((p) => p.employeeId))];
@@ -619,16 +1051,16 @@ employeesRouter.post('/locations/:locationId/attendance/import', authMiddleware,
           select: { employeeId: true, clockIn: true },
         })
       : [];
-    const existingKeys = new Set(existing.map((r) => `${r.employeeId}|${new Date(r.clockIn).toISOString()}`));
+    const existingKeys = new Set(existing.map((record) => `${record.employeeId}|${new Date(record.clockIn).toISOString()}`));
 
-    const toCreate = planned.filter((p) => !existingKeys.has(`${p.employeeId}|${p.clockIn.toISOString()}`));
+    const toCreate = planned.filter((plan) => !existingKeys.has(`${plan.employeeId}|${plan.clockIn.toISOString()}`));
     let creados = 0;
     if (toCreate.length) {
       const result = await prisma.attendanceRecord.createMany({
-        data: toCreate.map((p) => ({
-          employeeId: p.employeeId,
-          clockIn: p.clockIn,
-          clockOut: p.clockOut,
+        data: toCreate.map((plan) => ({
+          employeeId: plan.employeeId,
+          clockIn: plan.clockIn,
+          clockOut: plan.clockOut,
           source: 'BIOMETRIC',
         })),
       });
@@ -642,6 +1074,15 @@ employeesRouter.post('/locations/:locationId/attendance/import', authMiddleware,
       saltados,
       sinEmpleado: [...sinEmpleado],
       offsetHours,
+      inactivePolicy,
+      nuevosCreados: importContext.createdCount,
+      reactivados: importContext.reactivatedCount,
+      ignoradosInactivos: [...ignoredInactive],
+      filasIgnoradasInactivos: ignoredInactiveRows,
+      warnings: [...ignoredInactive].map((personId) => {
+        const employee = importContext.employeeByPersonId.get(personId);
+        return `checadas ignoradas de empleado dado de baja: ${employee ? employee.name : personId}`;
+      }),
     });
   } catch (error) {
     next(error);

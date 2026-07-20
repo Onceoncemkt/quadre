@@ -9,6 +9,11 @@ generator client {
   provider = "prisma-client-js"
 }
 
+enum EmployeeStatus {
+  ACTIVO
+  INACTIVO
+}
+
 
 datasource db {
   provider = "postgresql"
@@ -477,9 +482,12 @@ model Employee {
   locationId  String?
   name        String
   position    String   // Mesero, Cocinero, Barra, Gerente...
+  status      EmployeeStatus @default(ACTIVO)
+  fechaBaja   DateTime? @db.Date
   payType     PayType  @default(DAILY)
   dailyRate   Decimal? @db.Decimal(12, 2)
   hourlyRate  Decimal? @db.Decimal(12, 2)
+  needsReview Boolean  @default(false)
   biometricId String?  // ID en el checador para el import
   active      Boolean  @default(true)
   hiredAt     DateTime? @db.Date

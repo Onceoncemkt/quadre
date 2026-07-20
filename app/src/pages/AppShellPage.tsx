@@ -57,6 +57,7 @@ import {
   createAttendance,
   patchAttendance,
   deleteAttendance,
+  previewAttendanceImport,
   importAttendance,
   getPayrollPeriods,
   createPayrollPeriod,
@@ -84,6 +85,9 @@ import {
   type ShiftClosingItem,
   type WaitlistLead,
   type Employee,
+  type AttendanceImportEmployeeCount,
+  type AttendanceImportPreviewRow,
+  type AttendanceImportRow,
   type AttendanceEmployeeBucket,
   type PayrollPeriodItem,
   type PayrollRow,
@@ -902,6 +906,7 @@ export function AppShellPage() {
   const [employees, setEmployees] = useState<Employee[]>([])
   const [loadingEmployees, setLoadingEmployees] = useState(false)
   const [employeesError, setEmployeesError] = useState('')
+  const [showInactiveEmployees, setShowInactiveEmployees] = useState(false)
   const [showEmployeeForm, setShowEmployeeForm] = useState(false)
   const [editingEmployeeId, setEditingEmployeeId] = useState('')
   const [employeeForm, setEmployeeForm] = useState({ ...emptyEmployeeForm })
@@ -920,12 +925,25 @@ export function AppShellPage() {
   const [attendanceModalError, setAttendanceModalError] = useState('')
 
   const [showImportModal, setShowImportModal] = useState(false)
-  const [importRows, setImportRows] = useState<Array<{ biometricId: string; timestamp: string }>>([])
+  const [importRows, setImportRows] = useState<AttendanceImportRow[]>([])
+  const [importPreviewRows, setImportPreviewRows] = useState<AttendanceImportPreviewRow[]>([])
+  const [importCountsByEmployee, setImportCountsByEmployee] = useState<AttendanceImportEmployeeCount[]>([])
   const [importFileName, setImportFileName] = useState('')
   const [importOffset, setImportOffset] = useState('0')
   const [importError, setImportError] = useState('')
+  const [importWarnings, setImportWarnings] = useState<string[]>([])
+  const [importInactivePolicy, setImportInactivePolicy] = useState<'IGNORE' | 'REACTIVATE'>('IGNORE')
+  const [previewingImport, setPreviewingImport] = useState(false)
   const [importingAttendance, setImportingAttendance] = useState(false)
-  const [importResult, setImportResult] = useState<{ creados: number; saltados: number; sinEmpleado: string[] } | null>(null)
+  const [importResult, setImportResult] = useState<{
+    creados: number
+    saltados: number
+    sinEmpleado: string[]
+    nuevosCreados?: number
+    reactivados?: number
+    filasIgnoradasInactivos?: number
+    warnings?: string[]
+  } | null>(null)
 
   const [payrollPeriods, setPayrollPeriods] = useState<PayrollPeriodItem[]>([])
   const [loadingPeriods, setLoadingPeriods] = useState(false)
@@ -1704,14 +1722,14 @@ export function AppShellPage() {
     if (activePayrollTab !== 'EMPLEADOS') return
     setLoadingEmployees(true)
     setEmployeesError('')
-    getEmployees({ token, businessId: selectedBusinessId, includeInactive: true })
+    getEmployees({ token, businessId: selectedBusinessId, includeInactive: showInactiveEmployees })
       .then((response) => setEmployees(response.items))
       .catch((error) => {
         setEmployees([])
         setEmployeesError(error instanceof Error ? error.message : 'No se pudieron cargar los empleados')
       })
       .finally(() => setLoadingEmployees(false))
-  }, [activeItem, activePayrollTab, token, selectedBusinessId])
+  }, [activeItem, activePayrollTab, token, selectedBusinessId, showInactiveEmployees])
 
   useEffect(() => {
     if (activeItem !== 'Nómina' || !token || !selectedLocationId) return
@@ -6619,7 +6637,7 @@ export function AppShellPage() {
 
   async function refreshEmployees() {
     if (!token || !selectedBusinessId) return
-    const response = await getEmployees({ token, businessId: selectedBusinessId, includeInactive: true })
+    const response = await getEmployees({ token, businessId: selectedBusinessId, includeInactive: showInactiveEmployees })
     setEmployees(response.items)
   }
   function openNewEmployee() {
@@ -6691,10 +6709,10 @@ export function AppShellPage() {
     if (!token || !selectedBusinessId) return
     setEmployeesError('')
     try {
-      if (emp.active) {
+      if (emp.status === 'ACTIVO') {
         await deleteEmployee({ token, businessId: selectedBusinessId, employeeId: emp.id })
       } else {
-        await patchEmployee({ token, businessId: selectedBusinessId, employeeId: emp.id, payload: { active: true } })
+        await patchEmployee({ token, businessId: selectedBusinessId, employeeId: emp.id, payload: { status: 'ACTIVO', fechaBaja: null } })
       }
       await refreshEmployees()
     } catch (error) {
@@ -6812,51 +6830,70 @@ export function AppShellPage() {
     }
   }
 
-  function handleCsvFile(event: ChangeEvent<HTMLInputElement>) {
+  async function handleImportFile(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0]
+    event.target.value = ''
     if (!file) return
+    if (!token || !selectedLocationId) {
+      setImportError('Selecciona una sucursal antes de importar checadas')
+      return
+    }
     setImportError('')
     setImportResult(null)
-    const reader = new FileReader()
-    reader.onload = () => {
-      try {
-        const text = String(reader.result || '')
-        const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
-        if (!lines.length) throw new Error('El archivo está vacío')
-        const delimiter = lines[0].includes(';') && !lines[0].includes(',') ? ';' : ','
-        const cells = lines.map((line) => line.split(delimiter).map((c) => c.trim().replace(/^"|"$/g, '')))
-        const header = cells[0].map((c) => c.toLowerCase())
-        let idIdx = header.findIndex((h) => /id|biomet|emplead|user|clave/.test(h))
-        let tsIdx = header.findIndex((h) => /time|fecha|hora|stamp|date|check/.test(h))
-        let dataRows = cells.slice(1)
-        if (idIdx === -1 || tsIdx === -1) {
-          idIdx = 0
-          tsIdx = 1
-          dataRows = cells
-        }
-        const rows = dataRows
-          .map((row) => ({ biometricId: row[idIdx], timestamp: row[tsIdx] }))
-          .filter((row) => row.biometricId && row.timestamp)
-        if (!rows.length) throw new Error('No se detectaron filas con ID y timestamp')
-        setImportRows(rows)
-        setImportFileName(file.name)
-      } catch (error) {
-        setImportRows([])
-        setImportFileName('')
-        setImportError(error instanceof Error ? error.message : 'No se pudo leer el CSV')
+    setImportRows([])
+    setImportPreviewRows([])
+    setImportCountsByEmployee([])
+    setImportWarnings([])
+    setImportInactivePolicy('IGNORE')
+    setImportFileName(file.name)
+    setPreviewingImport(true)
+    try {
+      const preview = await previewAttendanceImport({
+        token,
+        locationId: selectedLocationId,
+        file,
+        offsetHours: Number(importOffset) || 0,
+      })
+      setImportRows(preview.rows)
+      setImportPreviewRows(preview.previewRows)
+      setImportCountsByEmployee(preview.countsByEmployee)
+      setImportWarnings(preview.warnings || [])
+      if (!preview.rows.length) {
+        setImportError('No se detectaron filas válidas en el archivo')
       }
+    } catch (error) {
+      setImportRows([])
+      setImportPreviewRows([])
+      setImportCountsByEmployee([])
+      setImportWarnings([])
+      setImportError(error instanceof Error ? error.message : 'No se pudo procesar el archivo')
+    } finally {
+      setPreviewingImport(false)
     }
-    reader.onerror = () => setImportError('No se pudo leer el archivo')
-    reader.readAsText(file)
-    event.target.value = ''
+  }
+  function handleImportOffsetChange(value: string) {
+    setImportOffset(value)
+    if (!importRows.length && !importPreviewRows.length) return
+    setImportRows([])
+    setImportPreviewRows([])
+    setImportCountsByEmployee([])
+    setImportWarnings([])
+    setImportInactivePolicy('IGNORE')
+    setImportResult(null)
+    setImportError('Offset actualizado. Vuelve a seleccionar el archivo para recalcular la previsualización.')
   }
   async function handleRunImport() {
     if (!token || !selectedLocationId || !importRows.length) return
     setImportingAttendance(true)
     setImportError('')
     try {
-      const result = await importAttendance({ token, locationId: selectedLocationId, payload: { offsetHours: Number(importOffset) || 0, rows: importRows } })
+      const result = await importAttendance({
+        token,
+        locationId: selectedLocationId,
+        payload: { offsetHours: Number(importOffset) || 0, rows: importRows, inactivePolicy: importInactivePolicy },
+      })
       setImportResult(result)
+      setImportWarnings(result.warnings || [])
       await refreshAttendance()
     } catch (error) {
       setImportError(error instanceof Error ? error.message : 'No se pudo importar')
@@ -6867,10 +6904,15 @@ export function AppShellPage() {
   function closeImportModal() {
     setShowImportModal(false)
     setImportRows([])
+    setImportPreviewRows([])
+    setImportCountsByEmployee([])
+    setImportWarnings([])
+    setImportInactivePolicy('IGNORE')
     setImportFileName('')
     setImportResult(null)
     setImportError('')
     setImportOffset('0')
+    setPreviewingImport(false)
   }
 
   async function refreshPeriods() {
@@ -6971,10 +7013,17 @@ export function AppShellPage() {
     }
   }
 
-  const renderPayrollEmpleados = () => (
+  const renderPayrollEmpleados = () => {
+    const visibleEmployees = showInactiveEmployees ? employees : employees.filter((employee) => employee.status === 'ACTIVO')
+    const activeEmployeesCount = employees.filter((employee) => employee.status === 'ACTIVO').length
+    return (
     <>
       <div className="q-actions-row">
-        <p className="q-table-muted">{employees.filter((e) => e.active).length} activos</p>
+        <p className="q-table-muted">{activeEmployeesCount} activos</p>
+        <label className="q-toggle-inline">
+          <input type="checkbox" checked={showInactiveEmployees} onChange={(event) => setShowInactiveEmployees(event.target.checked)} />
+          Mostrar inactivos
+        </label>
         {canManageEmployees ? (
           <button className="q-btn q-btn-inline" type="button" onClick={openNewEmployee}>
             Agregar empleado
@@ -7063,13 +7112,13 @@ export function AppShellPage() {
       ) : null}
       {loadingEmployees ? <p>Cargando empleados...</p> : null}
       {employeesError ? <p className="q-error-text">{employeesError}</p> : null}
-      {!loadingEmployees && !employeesError && !employees.length ? (
+      {!loadingEmployees && !employeesError && !visibleEmployees.length ? (
         <section className="q-card q-empty-state">
           <h3>Aún no hay empleados</h3>
-          <p>Agrega al primer empleado para llevar su asistencia y nómina.</p>
+          <p>{showInactiveEmployees ? 'Agrega al primer empleado para llevar su asistencia y nómina.' : 'No hay empleados activos en esta vista.'}</p>
         </section>
       ) : null}
-      {!loadingEmployees && !employeesError && employees.length ? (
+      {!loadingEmployees && !employeesError && visibleEmployees.length ? (
         <div className="q-table-wrap">
           <table className="q-table">
             <thead>
@@ -7084,8 +7133,8 @@ export function AppShellPage() {
               </tr>
             </thead>
             <tbody>
-              {employees.map((emp) => (
-                <tr key={emp.id} className={emp.active ? '' : 'q-row-inactive'}>
+              {visibleEmployees.map((emp) => (
+                <tr key={emp.id} className={emp.status === 'ACTIVO' ? '' : 'q-row-inactive'}>
                   <td>
                     <div className="q-table-turn">
                       <strong>{emp.name}</strong>
@@ -7094,6 +7143,7 @@ export function AppShellPage() {
                       ) : (
                         <span className="q-table-muted">Sin fecha de ingreso</span>
                       )}
+                      {emp.status === 'INACTIVO' && emp.fechaBaja ? <span className="q-table-muted">Baja {formatDateFromIsoString(emp.fechaBaja)}</span> : null}
                     </div>
                   </td>
                   <td>{emp.position} · <span className="q-table-muted">{formatPayType(emp.payType)}</span></td>
@@ -7104,7 +7154,10 @@ export function AppShellPage() {
                   </td>
                   <td className="q-mono">{emp.biometricId || '—'}</td>
                   <td>{businessLocationName(emp.locationId)}</td>
-                  <td>{emp.active ? <span className="q-chip ok">Activo</span> : <span className="q-chip voided">Inactivo</span>}</td>
+                  <td>
+                    {emp.status === 'ACTIVO' ? <span className="q-chip ok">Activo</span> : <span className="q-chip voided">Inactivo</span>}
+                    {emp.needsReview ? <span className="q-chip pending">Configurar tarifa</span> : null}
+                  </td>
                   {canManageEmployees ? (
                     <td>
                       <div className="q-table-actions">
@@ -7112,8 +7165,8 @@ export function AppShellPage() {
                         {canSeeSettlement ? (
                           <button type="button" className="q-link-btn" onClick={() => openSettlement(emp)}>Finiquito</button>
                         ) : null}
-                        <button type="button" className={`q-link-btn ${emp.active ? 'q-link-danger' : ''}`} onClick={() => handleToggleEmployeeActive(emp)}>
-                          {emp.active ? 'Desactivar' : 'Reactivar'}
+                        <button type="button" className={`q-link-btn ${emp.status === 'ACTIVO' ? 'q-link-danger' : ''}`} onClick={() => handleToggleEmployeeActive(emp)}>
+                          {emp.status === 'ACTIVO' ? 'Dar de baja' : 'Reactivar'}
                         </button>
                       </div>
                     </td>
@@ -7125,7 +7178,8 @@ export function AppShellPage() {
         </div>
       ) : null}
     </>
-  )
+    )
+  }
 
   const renderPayrollAsistencia = () => (
     <>
@@ -7453,31 +7507,85 @@ export function AppShellPage() {
               <h2>Importar checador</h2>
               <button type="button" className="q-link-btn" onClick={closeImportModal}>Cerrar</button>
             </header>
-            <p className="q-table-muted">Sube el CSV del checador (columnas de ID y timestamp). Empareja entradas/salidas por día.</p>
-            <label className="q-field">Archivo CSV<input type="file" accept=".csv,text/csv" onChange={handleCsvFile} /></label>
-            <label className="q-field">Offset de horas del reloj<input type="number" step="1" value={importOffset} onChange={(e) => setImportOffset(e.target.value)} /></label>
-            {importFileName ? <p className="q-table-muted">{importFileName} · {importRows.length} filas detectadas</p> : null}
-            {importRows.length ? (
+            <p className="q-table-muted">Sube CSV o PDF (reporte Transaction del biométrico). Primero se previsualizan registros por empleado, fecha y hora; luego confirmas el import.</p>
+            <label className="q-field">Offset de horas del reloj<input type="number" step="1" value={importOffset} onChange={(e) => handleImportOffsetChange(e.target.value)} /></label>
+            <label className="q-field">Archivo CSV/PDF<input type="file" accept=".csv,.pdf,text/csv,application/pdf" onChange={handleImportFile} /></label>
+            {previewingImport ? <p className="q-table-muted">Procesando archivo...</p> : null}
+            {importFileName ? <p className="q-table-muted">{importFileName} · {importRows.length} registros parseados</p> : null}
+            {importCountsByEmployee.length ? (
               <div className="q-table-wrap">
                 <table className="q-table">
-                  <thead><tr><th>ID checador</th><th>Timestamp</th></tr></thead>
+                  <thead><tr><th>Empleado</th><th className="is-right">Registros</th></tr></thead>
                   <tbody>
-                    {importRows.slice(0, 5).map((row, index) => (
-                      <tr key={`${row.biometricId}-${index}`}><td className="q-mono">{row.biometricId}</td><td className="q-mono">{row.timestamp}</td></tr>
+                    {importCountsByEmployee.map((item) => (
+                      <tr key={`${item.personId}-${item.empleado}`}>
+                        <td>
+                          {item.empleado}
+                          {item.isNewEmployee ? <span className="q-chip pending">Nuevo — configurar tarifa</span> : null}
+                          {item.isInactiveEmployee ? <span className="q-chip falt">Empleado dado de baja</span> : null}
+                        </td>
+                        <td className="is-right q-mono">{item.count}</td>
+                      </tr>
                     ))}
                   </tbody>
                 </table>
+              </div>
+            ) : null}
+            {importPreviewRows.some((row) => row.isInactiveEmployee) ? (
+              <div className="q-card" style={{ marginTop: 12 }}>
+                <p className="q-error-text">Se detectaron checadas de empleados dados de baja.</p>
+                <div className="q-table-actions">
+                  <label className="q-toggle-inline">
+                    <input type="radio" name="inactive-policy" checked={importInactivePolicy === 'IGNORE'} onChange={() => setImportInactivePolicy('IGNORE')} />
+                    Ignorar esas filas
+                  </label>
+                  <label className="q-toggle-inline">
+                    <input type="radio" name="inactive-policy" checked={importInactivePolicy === 'REACTIVATE'} onChange={() => setImportInactivePolicy('REACTIVATE')} />
+                    Reactivar automáticamente en este import
+                  </label>
+                </div>
+              </div>
+            ) : null}
+            {importPreviewRows.length ? (
+              <div className="q-table-wrap">
+                <table className="q-table">
+                  <thead><tr><th>Empleado</th><th>Fecha</th><th>Hora</th></tr></thead>
+                  <tbody>
+                    {importPreviewRows.slice(0, 20).map((row, index) => (
+                      <tr key={`${row.personId}-${row.timestamp}-${index}`}>
+                        <td>
+                          {row.empleado}
+                          {row.isNewEmployee ? <span className="q-chip pending">Nuevo — configurar tarifa</span> : null}
+                          {row.isInactiveEmployee ? <span className="q-chip falt">Empleado dado de baja</span> : null}
+                        </td>
+                        <td className="q-mono">{row.fecha}</td>
+                        <td className="q-mono">{row.hora}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : null}
+            {importPreviewRows.length > 20 ? <p className="q-table-muted">Mostrando 20 de {importPreviewRows.length} registros previsualizados.</p> : null}
+            {importWarnings.length ? (
+              <div className="q-card" style={{ marginTop: 12 }}>
+                {importWarnings.map((warning, index) => (
+                  <p key={`${warning}-${index}`} className="q-error-text">{warning}</p>
+                ))}
               </div>
             ) : null}
             {importError ? <p className="q-error-text">{importError}</p> : null}
             {importResult ? (
               <p className="q-success-text">
                 Importado: {importResult.creados} creados, {importResult.saltados} saltados
+                {importResult.nuevosCreados ? ` · nuevos: ${importResult.nuevosCreados}` : ''}
+                {importResult.reactivados ? ` · reactivados: ${importResult.reactivados}` : ''}
+                {importResult.filasIgnoradasInactivos ? ` · ignoradas por baja: ${importResult.filasIgnoradasInactivos}` : ''}
                 {importResult.sinEmpleado.length ? ` · sin empleado: ${importResult.sinEmpleado.join(', ')}` : ''}
               </p>
             ) : null}
             <div className="q-table-actions">
-              <button type="button" className="q-btn q-btn-inline" disabled={!importRows.length || importingAttendance} onClick={handleRunImport}>{importingAttendance ? 'Importando...' : 'Importar'}</button>
+              <button type="button" className="q-btn q-btn-inline" disabled={!importRows.length || importingAttendance || previewingImport} onClick={handleRunImport}>{importingAttendance ? 'Importando...' : 'Confirmar importación'}</button>
               <button type="button" className="q-link-btn" onClick={closeImportModal}>Listo</button>
             </div>
           </section>

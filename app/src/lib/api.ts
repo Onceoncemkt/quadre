@@ -1305,9 +1305,12 @@ export type Employee = {
   locationId: string | null
   name: string
   position: string
+  status: 'ACTIVO' | 'INACTIVO'
+  fechaBaja: string | null
   payType: 'DAILY' | 'HOURLY' | 'FIXED'
   dailyRate: number | null
   hourlyRate: number | null
+  needsReview: boolean
   biometricId: string | null
   active: boolean
   hiredAt: string | null
@@ -1387,7 +1390,7 @@ export async function createEmployee({ token, businessId, payload }: {
 
 export async function patchEmployee({ token, businessId, employeeId, payload }: {
   token: string; businessId: string; employeeId: string
-  payload: { name?: string; position?: string; payType?: 'DAILY' | 'HOURLY' | 'FIXED'; dailyRate?: number | null; hourlyRate?: number | null; biometricId?: string | null; locationId?: string | null; hiredAt?: string | null; active?: boolean }
+  payload: { name?: string; position?: string; payType?: 'DAILY' | 'HOURLY' | 'FIXED'; dailyRate?: number | null; hourlyRate?: number | null; biometricId?: string | null; locationId?: string | null; hiredAt?: string | null; active?: boolean; status?: 'ACTIVO' | 'INACTIVO'; fechaBaja?: string | null; needsReview?: boolean }
 }) {
   return request<{ employee: Employee }>(`/businesses/${businessId}/employees/${employeeId}`, { method: 'PATCH', token, body: payload })
 }
@@ -1447,12 +1450,66 @@ export async function patchAttendance({ token, attendanceId, payload }: {
 export async function deleteAttendance({ token, attendanceId }: { token: string; attendanceId: string }) {
   return request<{ deleted: boolean }>(`/attendance/${attendanceId}`, { method: 'DELETE', token })
 }
+export type AttendanceImportRow = { personId: string; nombre?: string; timestamp: string }
+export type AttendanceImportPreviewRow = {
+  personId: string
+  nombre: string
+  empleado: string
+  fecha: string
+  hora: string
+  timestamp: string
+  isNewEmployee: boolean
+  isInactiveEmployee: boolean
+  warning: string | null
+  needsReview: boolean
+}
+export type AttendanceImportEmployeeCount = {
+  personId: string
+  empleado: string
+  count: number
+  isNewEmployee: boolean
+  isInactiveEmployee: boolean
+}
+
+export async function previewAttendanceImport({ token, locationId, file, offsetHours, inactivePolicy }: {
+  token: string
+  locationId: string
+  file: File
+  offsetHours: number
+  inactivePolicy?: 'IGNORE' | 'REACTIVATE'
+}) {
+  const form = new FormData()
+  form.append('file', file)
+  form.append('offsetHours', String(offsetHours))
+  if (inactivePolicy) form.append('inactivePolicy', inactivePolicy)
+  const response = await fetch(`${API_URL}/locations/${locationId}/attendance/import/preview`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: form,
+  })
+  const json = await response.json()
+  if (!response.ok) {
+    const message = json?.error || json?.message || 'Error de red'
+    throw new Error(message)
+  }
+  return json as {
+    rows: AttendanceImportRow[]
+    previewRows: AttendanceImportPreviewRow[]
+    countsByEmployee: AttendanceImportEmployeeCount[]
+    sinEmpleado: string[]
+    warnings: string[]
+    nuevos: string[]
+    inactivos: string[]
+    inactivePolicy: 'IGNORE' | 'REACTIVATE'
+    offsetHours: number
+  }
+}
 
 export async function importAttendance({ token, locationId, payload }: {
   token: string; locationId: string
-  payload: { offsetHours: number; rows: Array<{ biometricId: string; timestamp: string }> }
+  payload: { offsetHours: number; rows: AttendanceImportRow[]; inactivePolicy?: 'IGNORE' | 'REACTIVATE' }
 }) {
-  return request<{ creados: number; saltados: number; sinEmpleado: string[]; offsetHours: number }>(`/locations/${locationId}/attendance/import`, { method: 'POST', token, body: payload })
+  return request<{ creados: number; saltados: number; sinEmpleado: string[]; offsetHours: number; inactivePolicy?: 'IGNORE' | 'REACTIVATE'; nuevosCreados?: number; reactivados?: number; ignoradosInactivos?: string[]; filasIgnoradasInactivos?: number; warnings?: string[] }>(`/locations/${locationId}/attendance/import`, { method: 'POST', token, body: payload })
 }
 
 export async function getPayrollPeriods({ token, businessId }: { token: string; businessId: string }) {

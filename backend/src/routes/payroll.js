@@ -199,7 +199,7 @@ async function computeLiveRows(period) {
   const endStr = dateOnlyString(period.endDate);
 
   const employees = await prisma.employee.findMany({
-    where: { businessId: period.businessId, active: true },
+    where: { businessId: period.businessId, status: 'ACTIVO', active: true },
     include: { schedules: true },
     orderBy: [{ name: 'asc' }],
   });
